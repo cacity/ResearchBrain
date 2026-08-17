@@ -1,0 +1,2 @@
+# Installed by runtime-manager into a versioned private runtime, not the base app environment.
+mineru

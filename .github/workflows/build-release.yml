@@ -1,0 +1,49 @@
+name: Build unsigned Windows release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.6.5
+          uv venv --python 3.11
+          uv sync --all-extras --group dev --frozen
+          uv pip install --python .venv\Scripts\python.exe "pyinstaller>=6.12,<7"
+          npm ci --prefix desktop
+      - name: Build installers
+        shell: pwsh
+        run: .\scripts\build_release.ps1 -SkipPythonInstall -SkipNpmInstall
+      - name: Write checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem desktop\src-tauri\target\release\bundle -Recurse -File |
+            Where-Object { $_.Extension -in '.exe', '.msi' }
+          $lines = $files | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          }
+          $lines | Set-Content -Encoding ascii desktop\src-tauri\target\release\bundle\SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: researchbrain-windows-unsigned
+          path: |
+            desktop/src-tauri/target/release/bundle/**/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.msi
+            desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
+          if-no-files-found: error

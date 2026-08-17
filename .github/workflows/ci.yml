@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install uv and dependencies
+        shell: pwsh
+        run: |
+          python -m pip install uv==0.6.5
+          uv sync --all-extras --group dev --frozen
+      - name: Public repository audit
+        run: .\.venv\Scripts\python.exe scripts\public_repo_audit.py
+      - name: Ruff format
+        run: .\.venv\Scripts\python.exe -m ruff format --check --no-cache src tests scripts
+      - name: Ruff lint
+        run: .\.venv\Scripts\python.exe -m ruff check --no-cache src tests scripts
+      - name: Pytest
+        run: .\.venv\Scripts\python.exe -m pytest -p no:cacheprovider --cov --cov-report=term-missing
+      - name: Build and inspect Python distributions
+        shell: pwsh
+        run: |
+          uv build
+          .\.venv\Scripts\python.exe scripts\check_wheel.py
+
+  frontend:
+    name: React build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run build
+
+  rust:
+    name: Rust checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add sidecar placeholder for Tauri metadata
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force desktop\src-tauri\binaries | Out-Null
+          New-Item -ItemType File -Force desktop\src-tauri\binaries\researchbrain-sidecar-x86_64-pc-windows-msvc.exe | Out-Null
+      - name: Rust format
+        working-directory: desktop/src-tauri
+        run: cargo fmt --check
+      - name: Cargo check
+        working-directory: desktop/src-tauri
+        run: cargo check --locked
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings

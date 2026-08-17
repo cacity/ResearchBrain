@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a scoped research-library improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: checkboxes
+    attributes:
+      label: Scope check
+      options:
+        - label: This request does not require paywall bypass, shadow libraries, or silent Zotero writes.
+          required: true
+        - label: I searched existing issues and the roadmap.
+          required: true
+  - type: textarea
+    attributes:
+      label: Research workflow problem
+      description: Describe the decision or repeated task, not only a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Privacy, licensing, and data implications
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives considered

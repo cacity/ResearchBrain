@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible defect without private research data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: checkboxes
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed API keys, private PDFs, Zotero databases, cookies, and personal paths.
+          required: true
+        - label: I searched existing issues.
+          required: true
+  - type: input
+    attributes:
+      label: Version
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2 x64
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Area
+      options:
+        - Installation or startup
+        - Zotero synchronization
+        - DOI or full-text import
+        - PDF parsing
+        - Embedding or retrieval
+        - Evidence chat
+        - MCP
+        - Export
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: Use public or synthetic data only.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual behavior and sanitized error code
+    validations:
+      required: true

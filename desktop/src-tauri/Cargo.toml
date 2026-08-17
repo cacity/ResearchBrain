@@ -1,0 +1,21 @@
+[package]
+name = "researchbrain-desktop"
+version = "0.1.8"
+description = "ResearchBrain desktop application"
+authors = ["ResearchBrain"]
+license = "AGPL-3.0-only"
+edition = "2021"
+
+[lib]
+name = "researchbrain_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+uuid = { version = "1", features = ["v4"] }

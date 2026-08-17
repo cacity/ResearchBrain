@@ -1,0 +1,2 @@
+lancedb>=0.19,<1
+pyarrow>=18,<24

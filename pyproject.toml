@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "researchbrain"
+version = "0.1.8"
+description = "Local-first literature library and evidence-grounded research agent"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+keywords = ["research", "literature", "rag", "zotero", "mcp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Framework :: FastAPI",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU Affero General Public License v3",
+  "Operating System :: Microsoft :: Windows :: Windows 11",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+  "pydantic>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.14,<2",
+  "httpx>=0.28,<1",
+  "python-multipart>=0.0.20,<1",
+  "keyring>=25.6,<26",
+]
+
+[project.optional-dependencies]
+documents = ["pymupdf>=1.25,<2"]
+retrieval = ["lancedb>=0.19,<1", "pyarrow>=18,<24"]
+citations = ["bibtexparser>=1.4,<2", "rispy>=0.10,<1", "citeproc-py>=0.8,<1"]
+mcp = ["mcp>=1.6,<2"]
+all = [
+  "pymupdf>=1.25,<2",
+  "lancedb>=0.19,<1",
+  "pyarrow>=18,<24",
+  "bibtexparser>=1.4,<2",
+  "rispy>=0.10,<1",
+  "citeproc-py>=0.8,<1",
+  "mcp>=1.6,<2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "pytest-cov>=6,<7",
+  "ruff>=0.11,<1",
+]
+
+[project.scripts]
+researchbrain = "researchbrain.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/researchbrain"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = ["src/researchbrain/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+branch = true
+source = ["researchbrain"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = true

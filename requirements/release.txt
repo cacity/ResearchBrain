@@ -1,0 +1,6 @@
+-e .
+-r build.txt
+-r citations.txt
+-r documents.txt
+-r mcp.txt
+-r retrieval.txt
