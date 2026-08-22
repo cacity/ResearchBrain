@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Bot,
+  BrainCircuit,
   Check,
   ChevronDown,
   CircleAlert,
@@ -18,6 +19,8 @@ import {
   MessageSquareText,
   Paperclip,
   Play,
+  Power,
+  PowerOff,
   Plus,
   RefreshCw,
   Search,
@@ -41,15 +44,24 @@ import {
   Item,
   Job,
   Library,
+  HarnessStatus,
   ZoteroProbeStatus,
   ZoteroSyncStatus,
 } from "./api";
 
-type View = "library" | "chat" | "import" | "discover" | "jobs" | "settings";
+type View =
+  | "library"
+  | "chat"
+  | "harness"
+  | "import"
+  | "discover"
+  | "jobs"
+  | "settings";
 
 const NAVIGATION: { id: View; label: string; icon: typeof LibraryBig }[] = [
   { id: "library", label: "文献库", icon: LibraryBig },
   { id: "chat", label: "证据对话", icon: MessageSquareText },
+  { id: "harness", label: "深度调研", icon: BrainCircuit },
   { id: "import", label: "批量导入", icon: Import },
   { id: "discover", label: "在线发现", icon: FileSearch },
   { id: "jobs", label: "任务中心", icon: SlidersHorizontal },
@@ -232,6 +244,9 @@ function App() {
               )}
               {view === "chat" && activeLibrary && (
                 <ChatView library={activeLibrary} onImported={refresh} />
+              )}
+              {view === "harness" && activeLibrary && (
+                <HarnessView library={activeLibrary} />
               )}
               {view === "import" && activeLibrary && (
                 <ImportView library={activeLibrary} onQueued={refresh} />
@@ -1465,6 +1480,172 @@ function jobErrorText(job: Job) {
   if (job.error_code === "no_oa_fulltext")
     return "没有发现可合法自动下载的开放 PDF，可手工添加 PDF";
   return `${job.error_code} · ${job.error_message}`;
+}
+
+function HarnessView({ library }: { library: Library }) {
+  const [status, setStatus] = useState<HarnessStatus | null>(null);
+  const [port, setPort] = useState(3080);
+  const [busy, setBusy] = useState<"install" | "start" | "stop" | "">("");
+  const [error, setError] = useState("");
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      const value = await api.harnessStatus();
+      setStatus(value);
+      setPort(value.port);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStatus();
+  }, [refreshStatus]);
+
+  useEffect(() => {
+    if (!status?.running) return;
+    const timer = window.setInterval(() => void refreshStatus(), 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshStatus, status?.running]);
+
+  const run = async (action: "install" | "start" | "stop") => {
+    setBusy(action);
+    setError("");
+    try {
+      const value =
+        action === "install"
+          ? await api.installHarness(library.id, port)
+          : action === "start"
+            ? await api.startHarness(library.id, port)
+            : await api.stopHarness();
+      setStatus(value);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="harness-page">
+      <div className="harness-toolbar">
+        <label>
+          本地端口
+          <input
+            type="number"
+            min={1024}
+            max={65535}
+            value={port}
+            disabled={Boolean(status?.running)}
+            onChange={(event) => setPort(Number(event.target.value))}
+          />
+        </label>
+        <button
+          className="secondary-button"
+          disabled={Boolean(busy) || Boolean(status?.running)}
+          onClick={() => void run("install")}
+        >
+          {busy === "install" ? (
+            <LoaderCircle className="spin" size={16} />
+          ) : (
+            <Download size={16} />
+          )}
+          {status?.configured ? "更新环境" : "安装环境"}
+        </button>
+        <button
+          className="primary-button"
+          disabled={
+            Boolean(busy) || !status?.configured || Boolean(status?.running)
+          }
+          onClick={() => void run("start")}
+        >
+          {busy === "start" ? (
+            <LoaderCircle className="spin" size={16} />
+          ) : (
+            <Power size={16} />
+          )}
+          启动
+        </button>
+        <button
+          className="secondary-button"
+          disabled={Boolean(busy) || !status?.owned_process}
+          onClick={() => void run("stop")}
+        >
+          {busy === "stop" ? (
+            <LoaderCircle className="spin" size={16} />
+          ) : (
+            <PowerOff size={16} />
+          )}
+          停止
+        </button>
+        {status?.running && (
+          <a
+            className="primary-button harness-open"
+            href={status.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink size={16} />
+            打开工作台
+          </a>
+        )}
+      </div>
+
+      {error && (
+        <div className="harness-error">
+          <CircleAlert size={17} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="harness-status-list">
+        <div>
+          <span>Harness 服务</span>
+          <Status value={status?.running ? "active" : "stopped"} />
+        </div>
+        <div>
+          <span>ResearchBrain MCP</span>
+          <Status value={status?.configured ? "configured" : "not installed"} />
+        </div>
+        <div>
+          <span>科研 Skill</span>
+          <Status value={status?.configured ? "configured" : "not installed"} />
+        </div>
+        <div>
+          <span>Node.js</span>
+          <Status
+            value={
+              status?.node.supported
+                ? `${status.node.version} · ${status.node.source}`
+                : status?.node.version
+                  ? `${status.node.version} · unsupported`
+                  : "missing"
+            }
+          />
+        </div>
+        <div>
+          <span>当前文库</span>
+          <strong>{library.name}</strong>
+        </div>
+      </div>
+
+      <div className="harness-paths">
+        <div>
+          <span>运行地址</span>
+          <code>{status?.url ?? `http://127.0.0.1:${port}`}</code>
+        </div>
+        <div>
+          <span>隔离工作区</span>
+          <code>{status?.workspace_path || "-"}</code>
+        </div>
+        <div>
+          <span>运行日志</span>
+          <code>{status?.log_path || "-"}</code>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function SettingsView({

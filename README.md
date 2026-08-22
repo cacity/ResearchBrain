@@ -41,6 +41,8 @@ Docker 或 PostgreSQL。
 - **Scholar 补充**：可将检索式直接交给浏览器中的 Google Scholar，避免依赖不稳定的页面抓取。
 - **文献导出**：CSL-JSON、BibTeX、RIS、DOI 清单和 Markdown。
 - **Agent 接入**：FastAPI、CLI、桌面应用和 stdio MCP 共用同一 SQLite 与 LanceDB 数据。
+- **Harness 深度调研（实验分支）**：可启动隔离的 DeepSeek Harness Web Profile，通过 MCP 调用
+  ResearchBrain 的本地检索、联网发现、DOI 导入、开放全文和任务状态工具，并按科研 Skill 执行多步调研。
 
 ## 设计边界
 
@@ -60,6 +62,7 @@ Docker 或 PostgreSQL。
 flowchart LR
   UI["Tauri + React"] --> API["FastAPI sidecar"]
   MCP["Codex / MCP client"] --> CORE["Shared services"]
+  HARNESS["DeepSeek Harness"] --> MCP
   API --> CORE
   CORE --> DB["SQLite"]
   CORE --> IDX["LanceDB"]
@@ -136,9 +139,15 @@ ResearchBrain/
 安装桌面版后，在“设置 > Codex”点击“注册 MCP”，新建 Codex 任务即可调用：
 
 - `list_libraries`
+- `get_research_context`
+- `library_status`
 - `get_item`
 - `search_library`
 - `ask_library`
+- `search_online`
+- `import_dois`
+- `queue_fulltext`
+- `list_jobs`
 - `export_references`
 
 源码环境也可以运行：
@@ -147,6 +156,19 @@ ResearchBrain/
 .\scripts\register_codex_mcp.ps1
 codex.cmd mcp list
 ```
+
+## DeepSeek Harness 实验分支
+
+`feature/deepseek-harness` 提供完整的官方 Harness Web Profile，而不是在 ResearchBrain 中重新实现
+一套智能体循环。在“深度调研”中点击“安装环境”，应用会检测 Node.js；低于 `22.19` 时下载并校验
+官方 Node 24 便携版，再安装固定版本的 DSH 和 ResearchBrain MCP Bundle。启动后从页面打开 Harness
+工作台，当前文库会作为默认研究上下文。
+
+Harness 使用 `%LOCALAPPDATA%\ResearchBrain\harness` 下的隔离工作区和配置目录，不直接获得数据库、
+PDF 对象目录或 Zotero 目录的文件权限。文献导入和全文获取只能通过有副作用标记的 MCP 工具排队，
+解析和向量化是否完成以任务状态为准。
+
+详细安装、数据边界、调试和回退方式见 [DeepSeek Harness 集成说明](docs/deepseek-harness.md)。
 
 ## 测试与构建
 

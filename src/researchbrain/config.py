@@ -18,6 +18,14 @@ def _default_data_dir() -> Path:
     return Path.home() / ".researchbrain"
 
 
+def _port(value: Any, default: int = 3080) -> int:
+    try:
+        resolved = int(value)
+    except (TypeError, ValueError):
+        return default
+    return resolved if 1024 <= resolved <= 65535 else default
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -38,6 +46,7 @@ class Settings:
     worker_enabled: bool = True
     worker_poll_seconds: float = 1.0
     zotero_data_dir: Path = Path.home() / "Zotero"
+    harness_port: int = 3080
 
     @classmethod
     def load(cls) -> Settings:
@@ -91,6 +100,12 @@ class Settings:
                     str(saved.get("zotero_data_dir") or Path.home() / "Zotero"),
                 )
             ).expanduser(),
+            harness_port=_port(
+                os.getenv(
+                    "RESEARCHBRAIN_HARNESS_PORT",
+                    str(saved.get("harness_port") or 3080),
+                )
+            ),
         )
 
     def ensure_directories(self) -> None:
@@ -127,6 +142,7 @@ class UserConfigStore:
             "minimax_group_id",
             "mineru_executable",
             "zotero_data_dir",
+            "harness_port",
         }
         unexpected = set(values) - allowed
         if unexpected:

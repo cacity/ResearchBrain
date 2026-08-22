@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict
+
+from sqlalchemy import func, select
 
 from researchbrain.agent.deepseek import DeepSeekClient
 from researchbrain.agent.service import ResearchAgent
@@ -8,6 +11,23 @@ from researchbrain.citations.export import CitationExporter
 from researchbrain.config import Settings, UserConfigStore
 from researchbrain.db.base import Database
 from researchbrain.db.migrations import upgrade_schema
+from researchbrain.db.models import (
+    Attachment,
+    DocumentArtifact,
+    DocumentChunk,
+    Identifier,
+    Item,
+    Job,
+    Library,
+)
+from researchbrain.discovery.service import (
+    ArxivSearchProvider,
+    CrossrefSearchProvider,
+    LiteratureDiscovery,
+    OpenAlexSearchProvider,
+    PubMedSearchProvider,
+)
+from researchbrain.jobs.service import JobService
 from researchbrain.library.repository import LibraryRepository
 from researchbrain.retrieval.index import LanceIndex
 from researchbrain.retrieval.minimax import MiniMaxEmbedder
@@ -27,6 +47,7 @@ class ResearchBrainTools:
         self.database.engine.dispose()
 
     def list_libraries(self) -> list[dict]:
+        default_library_id = os.getenv("RESEARCHBRAIN_DEFAULT_LIBRARY_ID", "")
         with self.database.session() as session:
             return [
                 {
@@ -34,9 +55,63 @@ class ResearchBrainTools:
                     "name": library.name,
                     "mode": library.mode,
                     "last_version": library.last_version,
+                    "is_default": library.id == default_library_id,
                 }
                 for library in LibraryRepository(session).list_libraries()
             ]
+
+    def get_research_context(self) -> dict:
+        libraries = self.list_libraries()
+        default_library_id = os.getenv("RESEARCHBRAIN_DEFAULT_LIBRARY_ID", "")
+        default_library = next(
+            (library for library in libraries if library["id"] == default_library_id),
+            libraries[0] if len(libraries) == 1 else None,
+        )
+        return {
+            "default_library": default_library,
+            "libraries": libraries,
+            "data_policy": "ResearchBrain MCP only; the Harness workspace does not expose library files",
+        }
+
+    def library_status(self, library_id: str) -> dict:
+        with self.database.session() as session:
+            library = session.get(Library, library_id)
+            if not library:
+                raise ValueError("library not found")
+            active_items = select(Item.id).where(
+                Item.library_id == library_id,
+                Item.status != "tombstone",
+            )
+            item_ids = active_items.subquery()
+            return {
+                "id": library.id,
+                "name": library.name,
+                "mode": library.mode,
+                "items": session.scalar(select(func.count()).select_from(item_ids)) or 0,
+                "pdf_items": session.scalar(
+                    select(func.count(func.distinct(Attachment.item_id))).where(
+                        Attachment.item_id.in_(select(item_ids.c.id)),
+                        Attachment.status == "stored",
+                    )
+                )
+                or 0,
+                "parsed_items": session.scalar(
+                    select(func.count(func.distinct(Attachment.item_id)))
+                    .join(DocumentArtifact, DocumentArtifact.attachment_id == Attachment.id)
+                    .where(
+                        Attachment.item_id.in_(select(item_ids.c.id)),
+                        DocumentArtifact.status == "ready",
+                    )
+                )
+                or 0,
+                "fulltext_indexed_items": session.scalar(
+                    select(func.count(func.distinct(DocumentChunk.item_id))).where(
+                        DocumentChunk.item_id.in_(select(item_ids.c.id)),
+                        DocumentChunk.index_status == "ready",
+                    )
+                )
+                or 0,
+            }
 
     def get_item(self, item_id: str) -> dict:
         with self.database.session() as session:
@@ -92,6 +167,95 @@ class ResearchBrainTools:
             "model": answer.model,
         }
 
+    async def search_online(
+        self,
+        query: str,
+        sources: list[str] | None = None,
+        limit_per_source: int = 5,
+    ) -> dict:
+        contact_email = str(self.user_config.get("contact_email") or self.settings.contact_email)
+        providers = {
+            "crossref": CrossrefSearchProvider(self.settings.crossref_base_url, contact_email),
+            "openalex": OpenAlexSearchProvider(
+                contact_email,
+                SecretStore().get("openalex_api_key"),
+            ),
+            "arxiv": ArxivSearchProvider(),
+            "pubmed": PubMedSearchProvider(
+                contact_email,
+                SecretStore().get("ncbi_api_key"),
+            ),
+        }
+        selected_names = list(dict.fromkeys(sources or list(providers)))
+        invalid = sorted(set(selected_names) - set(providers))
+        if invalid:
+            raise ValueError(f"unsupported online sources: {', '.join(invalid)}")
+        result = await LiteratureDiscovery([providers[name] for name in selected_names]).search_with_status(
+            query,
+            max(1, min(limit_per_source, 20)),
+        )
+        return {
+            "records": [asdict(record) for record in result.records],
+            "providers": [asdict(status) for status in result.providers],
+        }
+
+    def import_dois(self, library_id: str, dois: list[str], include_si: bool = False) -> dict:
+        with self.database.session() as session:
+            if not session.get(Library, library_id):
+                raise ValueError("library not found")
+            batch = JobService(session).create_doi_batch(library_id, dois, include_si)
+            return {
+                "batch_id": batch.id,
+                "library_id": batch.library_id,
+                "status": batch.status,
+                "accepted": batch.total,
+                "input_errors": batch.input_errors,
+            }
+
+    def queue_fulltext(self, item_id: str, include_si: bool = False) -> dict:
+        with self.database.session() as session:
+            item = session.get(Item, item_id)
+            if not item:
+                raise ValueError("item not found")
+            doi = session.scalar(
+                select(Identifier.normalized_value)
+                .where(Identifier.item_id == item_id)
+                .where(Identifier.scheme == "doi")
+                .limit(1)
+            )
+            if not doi:
+                raise ValueError("item has no DOI")
+            stored_pdf = session.scalar(
+                select(Attachment.id)
+                .where(Attachment.item_id == item_id)
+                .where(Attachment.status == "stored")
+                .limit(1)
+            )
+            if stored_pdf:
+                return {
+                    "item_id": item_id,
+                    "status": "already_available",
+                    "attachment_id": stored_pdf,
+                }
+            job, requeued = JobService(session).queue_fulltext_job(
+                item.library_id,
+                item.id,
+                doi,
+                include_si,
+            )
+            return {
+                "item_id": item_id,
+                "doi": doi,
+                "job_id": job.id,
+                "status": job.status,
+                "requeued": requeued,
+            }
+
+    def list_jobs(self, limit: int = 50) -> list[dict]:
+        with self.database.session() as session:
+            jobs = JobService(session).list_jobs(max(1, min(limit, 200)))
+            return [_serialize_job(job) for job in jobs]
+
     def export_references(self, item_ids: list[str], output_format: str) -> dict:
         with self.database.session() as session:
             artifact = CitationExporter(session).export(item_ids, output_format)
@@ -111,3 +275,19 @@ class ResearchBrainTools:
             embedder.dimensions,
         )
         return EmbeddingPipeline(self.database, self.settings.data_dir, embedder, index)
+
+
+def _serialize_job(job: Job) -> dict:
+    return {
+        "id": job.id,
+        "batch_id": job.batch_id,
+        "job_type": job.job_type,
+        "status": job.status,
+        "progress": job.progress,
+        "payload": job.payload,
+        "result": job.result,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    }

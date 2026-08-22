@@ -41,6 +41,8 @@ device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreS
 - Hands searches off to Google Scholar in the browser instead of relying on unstable page scraping.
 - Exports CSL-JSON, BibTeX, RIS, DOI lists, and Markdown.
 - Exposes the same local corpus through the desktop app, FastAPI, CLI, and stdio MCP.
+- On the experimental `feature/deepseek-harness` branch, launches an isolated DeepSeek Harness Web profile
+  that uses ResearchBrain MCP tools and a strict literature-research Skill for multi-step investigations.
 
 ## Safety and scope
 
@@ -77,6 +79,16 @@ npm run tauri dev
 
 Configure provider credentials in the desktop settings so they are stored in Windows Credential Manager.
 The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
+
+## DeepSeek Harness branch
+
+The `feature/deepseek-harness` branch manages the official Harness Web profile instead of reimplementing its
+agent loop. The **Deep Research** view detects Node.js, installs a verified portable Node 24 runtime when the
+system version is below `22.19`, installs a pinned DSH release, and links the ResearchBrain MCP bundle. Harness
+runs in an isolated workspace and accesses the literature database only through MCP. Write operations such as
+DOI import and lawful open-full-text resolution remain explicit queued tools.
+
+See [DeepSeek Harness integration](docs/deepseek-harness.md) for setup, security boundaries, and rollback.
 
 ## Quality gate
 

@@ -66,6 +66,20 @@ def test_health_and_doi_batch(settings):
         assert rejected.status_code == 409
 
 
+def test_harness_status_is_available_without_installing_runtime(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/v1/harness/status")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["configured"] is False
+        assert body["running"] is False
+        assert body["port"] == 3080
+        assert body["url"] == "http://127.0.0.1:3080"
+        assert body["dsh_package"].startswith("@deepseek-ai/dsh@")
+
+
 def test_local_session_token_is_enforced(settings, monkeypatch):
     monkeypatch.setenv("RESEARCHBRAIN_SESSION_TOKEN", "test-token")
     app = create_app(settings)

@@ -33,6 +33,27 @@ function json(route, body) {
         const pathname = new URL(route.request().url()).pathname;
         if (pathname === "/v1/health") return json(route, { status: "ok" });
         if (pathname === "/v1/jobs") return json(route, []);
+        if (pathname === "/v1/harness/status") {
+            return json(route, {
+                available: true,
+                configured: true,
+                running: false,
+                owned_process: false,
+                port: 3080,
+                url: "http://127.0.0.1:3080",
+                dsh_package: "@deepseek-ai/dsh@0.1.1-rc.2",
+                node: {
+                    command: "C:\\ResearchBrain\\runtime\\node.exe",
+                    version: "24.19.0",
+                    source: "portable",
+                    supported: true,
+                },
+                profile_path: "C:\\ResearchBrain\\harness\\profiles\\web",
+                workspace_path: "C:\\ResearchBrain\\harness\\workspace",
+                log_path: "C:\\ResearchBrain\\harness\\harness.log",
+                error: "",
+            });
+        }
         if (pathname === "/v1/libraries") {
             return json(route, [
                 {
@@ -155,8 +176,63 @@ function json(route, body) {
         "researchbrain-library-identity-states.png",
     );
     await page.screenshot({ path: output, fullPage: true });
+    await page.getByRole("button", { name: "深度调研" }).click();
+    await page.getByText("ResearchBrain MCP").waitFor();
+    const harnessLayout = await page.evaluate(() => ({
+        viewportWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        pageScrollWidth: document.querySelector(".harness-page")?.scrollWidth,
+        pageClientWidth: document.querySelector(".harness-page")?.clientWidth,
+    }));
+    if (
+        harnessLayout.scrollWidth > harnessLayout.viewportWidth ||
+        Number(harnessLayout.pageScrollWidth) >
+            Number(harnessLayout.pageClientWidth)
+    ) {
+        throw new Error(
+            `Harness layout overflow: ${JSON.stringify(harnessLayout)}`,
+        );
+    }
+    const harnessOutput = path.join(
+        process.env.RB_VISUAL_DIR || os.tmpdir(),
+        "researchbrain-harness.png",
+    );
+    await page.screenshot({ path: harnessOutput, fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTitle("打开菜单").click();
+    await page.getByRole("button", { name: "深度调研" }).click();
+    await page.waitForTimeout(300);
+    const mobileHarnessLayout = await page.evaluate(() => ({
+        viewportWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        pageScrollWidth: document.querySelector(".harness-page")?.scrollWidth,
+        pageClientWidth: document.querySelector(".harness-page")?.clientWidth,
+    }));
+    if (
+        mobileHarnessLayout.scrollWidth > mobileHarnessLayout.viewportWidth ||
+        Number(mobileHarnessLayout.pageScrollWidth) >
+            Number(mobileHarnessLayout.pageClientWidth)
+    ) {
+        throw new Error(
+            `Mobile Harness layout overflow: ${JSON.stringify(mobileHarnessLayout)}`,
+        );
+    }
+    const mobileHarnessOutput = path.join(
+        process.env.RB_VISUAL_DIR || os.tmpdir(),
+        "researchbrain-harness-mobile.png",
+    );
+    await page.screenshot({ path: mobileHarnessOutput, fullPage: true });
     if (browserErrors.length) throw new Error(browserErrors.join(" | "));
-    console.log(JSON.stringify({ output, layout }));
+    console.log(
+        JSON.stringify({
+            output,
+            harnessOutput,
+            mobileHarnessOutput,
+            layout,
+            harnessLayout,
+            mobileHarnessLayout,
+        }),
+    );
     await browser.close();
 })().catch((error) => {
     console.error(error);

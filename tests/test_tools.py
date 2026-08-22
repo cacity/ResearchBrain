@@ -24,6 +24,11 @@ def test_tools_list_get_and_export(settings):
 
     tools = ResearchBrainTools(settings)
     assert tools.list_libraries()[0]["name"] == "Tools"
+    assert tools.get_research_context()["libraries"][0]["id"] == library.id
+    assert tools.library_status(library.id)["items"] == 1
     assert tools.get_item(item_id)["identifiers"]["doi"] == "10.1000/tool"
     assert tools.export_references([item_id], "doi")["content"] == "10.1000/tool\n"
+    batch = tools.import_dois(library.id, ["10.1000/queued"])
+    assert batch["accepted"] == 1
+    assert tools.list_jobs()[0]["status"] == "queued"
     tools.close()

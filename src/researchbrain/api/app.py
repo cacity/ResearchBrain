@@ -61,6 +61,7 @@ from researchbrain.fulltext.discovery import (
 )
 from researchbrain.fulltext.service import FullTextPipeline
 from researchbrain.fulltext.storage import DownloadError, ObjectStore
+from researchbrain.harness import HarnessInstallError, HarnessRuntimeManager
 from researchbrain.jobs.service import JobService
 from researchbrain.jobs.worker import JobWorker
 from researchbrain.library.repository import LibraryRepository
@@ -89,6 +90,8 @@ class AppState:
         self.minimax_group_id = str(saved.get("minimax_group_id") or settings.minimax_group_id)
         self.zotero_data_dir = Path(saved.get("zotero_data_dir") or settings.zotero_data_dir)
         self.mineru_executable = str(saved.get("mineru_executable") or settings.mineru_executable)
+        self.harness_port = int(saved.get("harness_port") or settings.harness_port)
+        self.harness = HarnessRuntimeManager(settings.data_dir)
 
 
 class LibraryResponse(BaseModel):
@@ -170,6 +173,11 @@ class RuntimeInstallRequest(BaseModel):
     version: str
     archive_path: str
     sha256: str
+
+
+class HarnessActionRequest(BaseModel):
+    library_id: str = ""
+    port: int = Field(default=3080, ge=1024, le=65535)
 
 
 class PublicConfigUpdateRequest(BaseModel):
@@ -452,6 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await parent_task
                 except asyncio.CancelledError:
                     pass
+            await asyncio.to_thread(state.harness.stop)
             state.database.engine.dispose()
 
     app = FastAPI(title="ResearchBrain", version=__version__, lifespan=lifespan)
@@ -613,6 +622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         public_settings["minimax_group_id"] = state.minimax_group_id
         public_settings["zotero_data_dir"] = str(state.zotero_data_dir)
         public_settings["mineru_executable"] = state.mineru_executable
+        public_settings["harness_port"] = state.harness_port
         public_settings["secrets"] = SecretStore().status()
         return public_settings
 
@@ -1140,6 +1150,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except (OSError, RuntimeInstallError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return asdict(state)
+
+    @app.get("/v1/harness/status")
+    def harness_status() -> dict:
+        return state.harness.status(state.harness_port)
+
+    @app.post("/v1/harness/install")
+    async def install_harness(request: HarnessActionRequest) -> dict:
+        if request.library_id:
+            with state.database.session() as session:
+                if not session.get(Library, request.library_id):
+                    raise HTTPException(status_code=404, detail="library not found")
+        state.harness_port = request.port
+        state.user_config.update({"harness_port": request.port})
+        try:
+            return await asyncio.to_thread(state.harness.install, request.library_id)
+        except (OSError, HarnessInstallError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/harness/start")
+    async def start_harness(request: HarnessActionRequest) -> dict:
+        if request.library_id:
+            with state.database.session() as session:
+                if not session.get(Library, request.library_id):
+                    raise HTTPException(status_code=404, detail="library not found")
+        state.harness_port = request.port
+        state.user_config.update({"harness_port": request.port})
+        try:
+            return await asyncio.to_thread(
+                state.harness.start,
+                request.port,
+                request.library_id,
+                SecretStore().get("deepseek_api_key"),
+                resolved_settings.deepseek_base_url,
+                resolved_settings.deepseek_model,
+            )
+        except (OSError, HarnessInstallError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/harness/stop")
+    async def stop_harness() -> dict:
+        return await asyncio.to_thread(state.harness.stop)
 
     @app.get("/v1/libraries/{library_id}/items")
     def list_items(
