@@ -108,6 +108,33 @@ class JobService:
         self.session.flush()
         return job
 
+    def queue_fulltext_job(
+        self,
+        library_id: str,
+        item_id: str,
+        doi: str,
+        include_si: bool = False,
+    ) -> tuple[Job, bool]:
+        """Create a full-text job or requeue its terminal idempotent predecessor."""
+        job = self.create_fulltext_job(library_id, item_id, doi, include_si)
+        if job.status not in {
+            JobStatus.COMPLETE.value,
+            JobStatus.FAILED.value,
+            JobStatus.REVIEW_REQUIRED.value,
+            JobStatus.CANCELED.value,
+        }:
+            return job, False
+        job.status = JobStatus.QUEUED.value
+        job.progress = 0
+        job.attempt = 0
+        job.error_code = ""
+        job.error_message = ""
+        job.started_at = None
+        job.finished_at = None
+        job.next_retry_at = None
+        self.session.flush()
+        return job, True
+
     def retry_failed_jobs(
         self,
         library_id: str | None = None,

@@ -21,7 +21,7 @@ CSL-JSON、BibTeX、RIS、DOI 清单或 Markdown，也可通过 MCP 交给 Codex
 MiniMax、DeepSeek 时才会发送相应请求。应用可在 Windows 11 上独立运行，不依赖 WSL、gbrain、
 Docker 或 PostgreSQL。
 
-> 当前为 `0.1.8 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
+> 当前为 `0.1.9 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
 
 ![ResearchBrain 桌面界面](docs/images/researchbrain-library.png)
 

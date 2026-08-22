@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from dataclasses import asdict
+from pathlib import Path
 
 import uvicorn
 
@@ -39,6 +41,25 @@ def build_parser() -> argparse.ArgumentParser:
     worker = subparsers.add_parser("worker", help="Run queued metadata jobs.")
     worker.add_argument("--once", action="store_true", help="Process at most one job and exit.")
     subparsers.add_parser("mcp", help="Run the ResearchBrain MCP server over stdio.")
+    snapshot = subparsers.add_parser(
+        "export-gbrain-snapshot",
+        help="Export a legacy gbrain PostgreSQL store through WSL.",
+    )
+    snapshot.add_argument("directory", type=Path)
+    snapshot.add_argument("--distro", default="Ubuntu-20.04")
+    snapshot.add_argument("--psql", default="/opt/pg16/bin/psql")
+    snapshot.add_argument(
+        "--source-database-url",
+        default="postgresql://postgres:postgres@127.0.0.1:5432/postgres",
+    )
+    migrate = subparsers.add_parser(
+        "migrate-gbrain",
+        help="Deduplicate and import a gbrain snapshot into an existing library.",
+    )
+    migrate.add_argument("directory", type=Path)
+    migrate.add_argument("--library-name", required=True)
+    migrate.add_argument("--dry-run", action="store_true")
+    migrate.add_argument("--no-backup", action="store_true")
     return parser
 
 
@@ -134,6 +155,39 @@ def main(argv: list[str] | None = None) -> int:
         from researchbrain.mcp_server import main as run_mcp
 
         run_mcp()
+        return 0
+    if args.command == "export-gbrain-snapshot":
+        from researchbrain.legacy.gbrain import export_gbrain_snapshot
+
+        manifest = export_gbrain_snapshot(
+            args.directory,
+            distro=args.distro,
+            psql=args.psql,
+            database_url=args.source_database_url,
+        )
+        print(json.dumps(asdict(manifest), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "migrate-gbrain":
+        from researchbrain.legacy.gbrain import GbrainMigrator, GbrainSnapshot
+
+        snapshot = GbrainSnapshot(args.directory)
+        if args.dry_run:
+            print(json.dumps(asdict(snapshot.plan()), ensure_ascii=False, indent=2))
+            return 0
+        settings.ensure_directories()
+        database = Database(settings.database_url)
+        upgrade_schema(settings)
+        index = LanceIndex(
+            settings.data_dir / "data" / "lancedb",
+            settings.minimax_embedding_model,
+            settings.minimax_embedding_dimensions,
+        )
+        result = GbrainMigrator(database, settings.data_dir, index, snapshot).migrate(
+            args.library_name,
+            backup=not args.no_backup,
+        )
+        database.engine.dispose()
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         return 0
     return 2
 

@@ -442,6 +442,38 @@ button {
   align-items: center;
   gap: 6px;
 }
+.pdf-pipeline-control {
+  position: relative;
+  min-width: 0;
+}
+.pdf-pipeline-control .pipeline-indicator {
+  width: 100%;
+}
+.pdf-pipeline-control:has(.pipeline-upload) .pipeline-indicator {
+  padding-right: 20px;
+}
+.pipeline-upload {
+  position: absolute;
+  top: 9px;
+  right: 2px;
+  width: 18px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid #d4dcd7;
+  padding: 0 0 0 2px;
+  color: #66736c;
+  background: transparent;
+  cursor: pointer;
+}
+.pipeline-upload:hover {
+  color: #17633e;
+}
+.pipeline-upload:focus-visible {
+  outline: 2px solid #2f8058;
+  outline-offset: 1px;
+}
 .pipeline-indicator {
   min-width: 0;
   height: 38px;

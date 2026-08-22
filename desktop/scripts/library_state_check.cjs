@@ -23,6 +23,7 @@ function json(route, body) {
         viewport: { width: 1360, height: 860 },
     });
     const browserErrors = [];
+    let fulltextQueued = false;
     page.on("console", (message) => {
         if (message.type() === "error") browserErrors.push(message.text());
     });
@@ -64,7 +65,40 @@ function json(route, body) {
                     identifiers: { doi: "10.1000/researchbrain.test" },
                     doi: "10.1000/researchbrain.test",
                 },
+                {
+                    id: "item-2",
+                    type: "article-journal",
+                    title: "An open paper waiting for its DOI PDF",
+                    year: 2025,
+                    container_title: "Open Research Journal",
+                    status: "active",
+                    pdf_status: fulltextQueued ? "queued" : "none",
+                    pdf_count: 0,
+                    parse_status: "none",
+                    embedding_status: "ready",
+                    metadata_embedding_status: "ready",
+                    fulltext_embedding_status: "none",
+                    knowledge_state: "metadata_indexed",
+                    next_action: "resolve_pdf",
+                    canonical_key: "doi:10.1000/open-paper",
+                    identifiers: { doi: "10.1000/open-paper" },
+                    doi: "10.1000/open-paper",
+                },
             ]);
+        }
+        if (pathname === "/v1/items/item-2/fulltext") {
+            fulltextQueued = true;
+            return route.fulfill({
+                status: 202,
+                contentType: "application/json",
+                body: JSON.stringify({
+                    id: "fulltext-job",
+                    status: "queued",
+                    job_type: "resolve_fulltext",
+                    doi: "10.1000/open-paper",
+                    requeued: false,
+                }),
+            });
         }
         return json(route, []);
     });
@@ -72,7 +106,10 @@ function json(route, body) {
     await page.goto(process.env.RB_APP_URL || "http://127.0.0.1:1420/", {
         waitUntil: "networkidle",
     });
-    const indicators = page.locator(".pipeline-statuses .pipeline-indicator");
+    const firstRow = page.locator("tbody tr").first();
+    const indicators = firstRow.locator(
+        ".pipeline-statuses .pipeline-indicator",
+    );
     await indicators.first().waitFor();
     if ((await indicators.count()) !== 4) {
         throw new Error(
@@ -83,6 +120,23 @@ function json(route, body) {
         if (!(await indicators.nth(index).isEnabled())) {
             throw new Error(`Pipeline indicator ${index + 1} is not clickable`);
         }
+    }
+    const missingRow = page
+        .locator("tbody tr")
+        .filter({ hasText: "An open paper waiting for its DOI PDF" });
+    await missingRow.locator(".pipeline-indicator").first().click();
+    await page.waitForFunction(() =>
+        Array.from(document.querySelectorAll("tbody tr")).some(
+            (row) =>
+                row.textContent?.includes(
+                    "An open paper waiting for its DOI PDF",
+                ) && row.textContent?.includes("排队"),
+        ),
+    );
+    if (!fulltextQueued) {
+        throw new Error(
+            "Clicking a missing DOI PDF did not queue full-text retrieval",
+        );
     }
     const layout = await page.evaluate(() => ({
         viewportWidth: document.documentElement.clientWidth,

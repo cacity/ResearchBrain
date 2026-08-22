@@ -25,6 +25,7 @@ import {
   Settings,
   SlidersHorizontal,
   SquareTerminal,
+  Upload,
   X,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
@@ -223,9 +224,10 @@ function App() {
                   items={items}
                   onNavigate={setView}
                   onError={setError}
-                  onRefresh={() =>
-                    activeLibraryId && api.items(activeLibraryId).then(setItems)
-                  }
+                  onRefresh={() => {
+                    if (!activeLibraryId) return;
+                    return api.items(activeLibraryId).then(setItems);
+                  }}
                 />
               )}
               {view === "chat" && activeLibrary && (
@@ -305,12 +307,13 @@ function LibraryView({
   onError,
 }: {
   items: Item[];
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   onNavigate: (view: View) => void;
   onError: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const [processingPdfIds, setProcessingPdfIds] = useState<string[]>([]);
   const [viewer, setViewer] = useState<{ url: string; title: string } | null>(
     null,
   );
@@ -323,6 +326,27 @@ function LibraryView({
       ),
     [items, query],
   );
+  useEffect(() => {
+    if (!processingPdfIds.length) return;
+    const timer = window.setInterval(() => void onRefresh(), 1200);
+    return () => window.clearInterval(timer);
+  }, [onRefresh, processingPdfIds.length]);
+  useEffect(() => {
+    setProcessingPdfIds((current) =>
+      current.filter((itemId) => {
+        const item = items.find((value) => value.id === itemId);
+        if (!item) return false;
+        const terminal = [
+          item.pdf_status,
+          item.parse_status,
+          item.fulltext_embedding_status,
+        ].some((value) =>
+          ["failed", "review_required", "missing"].includes(value),
+        );
+        return !terminal && item.fulltext_embedding_status !== "ready";
+      }),
+    );
+  }, [items]);
   const exportSelected = async (format: string) => {
     const result = await api.exportReferences(selected, format);
     const blob = new Blob([result.content], { type: result.mime });
@@ -340,7 +364,26 @@ function LibraryView({
   };
   const openPdf = async (item: Item) => {
     if (item.pdf_status !== "ready") {
-      document.getElementById(`pdf-input-${item.id}`)?.click();
+      if (
+        processingPdfIds.includes(item.id) ||
+        ["queued", "running", "retry_wait"].includes(item.pdf_status)
+      ) {
+        onNavigate("jobs");
+        return;
+      }
+      if (!item.doi) {
+        onError("该文献没有 DOI，无法自动查找 PDF；请选择本地 PDF 文件");
+        document.getElementById(`pdf-input-${item.id}`)?.click();
+        return;
+      }
+      setProcessingPdfIds((values) => [...new Set([...values, item.id])]);
+      try {
+        await api.resolveItemFulltext(item.id);
+        await onRefresh();
+      } catch (reason) {
+        setProcessingPdfIds((values) => values.filter((id) => id !== item.id));
+        onError(reason instanceof Error ? reason.message : String(reason));
+      }
       return;
     }
     try {
@@ -459,12 +502,45 @@ function LibraryView({
                 <td>{item.container_title || "-"}</td>
                 <td>
                   <div className="pipeline-statuses">
-                    <PipelineIndicator
-                      icon={Paperclip}
-                      label="PDF"
-                      value={item.pdf_status}
-                      onClick={() => void openPdf(item)}
-                    />
+                    <div className="pdf-pipeline-control">
+                      <PipelineIndicator
+                        icon={Paperclip}
+                        label="PDF"
+                        value={
+                          processingPdfIds.includes(item.id) &&
+                          item.pdf_status === "none"
+                            ? "queued"
+                            : item.pdf_status
+                        }
+                        title={
+                          item.pdf_status === "ready"
+                            ? "打开 PDF"
+                            : item.doi
+                              ? "通过 DOI 查找 PDF，找到后自动解析并生成全文向量"
+                              : "该文献没有 DOI，点击选择本地 PDF"
+                        }
+                        onClick={() => void openPdf(item)}
+                      />
+                      {item.pdf_status !== "ready" &&
+                        !processingPdfIds.includes(item.id) &&
+                        !["queued", "running", "retry_wait"].includes(
+                          item.pdf_status,
+                        ) && (
+                          <button
+                            type="button"
+                            className="pipeline-upload"
+                            title="选择本地 PDF"
+                            aria-label={`为 ${item.title} 选择本地 PDF`}
+                            onClick={() =>
+                              document
+                                .getElementById(`pdf-input-${item.id}`)
+                                ?.click()
+                            }
+                          >
+                            <Upload size={12} />
+                          </button>
+                        )}
+                    </div>
                     <PipelineIndicator
                       icon={FileText}
                       label="解析"
@@ -540,11 +616,13 @@ function PipelineIndicator({
   icon: Icon,
   label,
   value,
+  title,
   onClick,
 }: {
   icon: typeof Paperclip;
   label: string;
   value: string;
+  title?: string;
   onClick: () => void;
 }) {
   const display =
@@ -571,7 +649,7 @@ function PipelineIndicator({
     <button
       type="button"
       className={`pipeline-indicator ${value}`}
-      title={`${label}：${display}，点击操作`}
+      title={title ?? `${label}：${display}，点击操作`}
       onClick={onClick}
     >
       <Icon size={13} />

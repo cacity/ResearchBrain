@@ -279,6 +279,7 @@ def _item_pipeline_statuses(session: Session, library_id: str, item_ids: list[st
         .where(
             Job.job_type.in_(
                 [
+                    JobType.RESOLVE_FULLTEXT.value,
                     JobType.PARSE_DOCUMENT.value,
                     JobType.EMBED_DOCUMENT.value,
                     JobType.EMBED_METADATA.value,
@@ -316,6 +317,12 @@ def _item_pipeline_statuses(session: Session, library_id: str, item_ids: list[st
             state["pdf_status"] = "failed"
         elif "missing" in attachment_values:
             state["pdf_status"] = "missing"
+        else:
+            state["pdf_status"] = job_stage(
+                item_id,
+                JobType.RESOLVE_FULLTEXT.value,
+                False,
+            )
 
         if item_id in parsed_ids:
             state["parse_status"] = "ready"
@@ -1277,6 +1284,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "reused": reused,
                 "parse_job_id": job.id,
             }
+
+    @app.post("/v1/items/{item_id}/fulltext", status_code=202)
+    def queue_item_fulltext(item_id: str, session: SessionDependency) -> dict:
+        item = session.get(Item, item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="item not found")
+        stored_pdf = session.scalar(
+            select(Attachment.id)
+            .where(Attachment.item_id == item_id)
+            .where(Attachment.status == "stored")
+            .where(
+                (func.lower(Attachment.mime) == "application/pdf")
+                | func.lower(Attachment.logical_name).like("%.pdf")
+                | func.lower(Attachment.object_path).like("%.pdf")
+            )
+            .limit(1)
+        )
+        if stored_pdf:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "pdf_already_available", "message": "PDF is already stored"},
+            )
+        doi = session.scalar(
+            select(Identifier.normalized_value)
+            .where(Identifier.item_id == item_id)
+            .where(Identifier.scheme == "doi")
+            .order_by(Identifier.is_primary.desc())
+            .limit(1)
+        )
+        if not doi:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "doi_missing",
+                    "message": "该文献没有 DOI，无法自动查找 PDF；请选择本地 PDF 文件",
+                },
+            )
+        job, requeued = JobService(session).queue_fulltext_job(
+            item.library_id,
+            item.id,
+            normalize_doi(doi),
+            include_si=False,
+        )
+        return {
+            "id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "doi": normalize_doi(doi),
+            "requeued": requeued,
+        }
 
     @app.get("/v1/items/{item_id}/attachments")
     def list_item_attachments(item_id: str, session: SessionDependency) -> list[dict]:

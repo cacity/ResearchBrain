@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.1.8 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.1.9 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 

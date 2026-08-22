@@ -320,6 +320,14 @@ export const api = {
     request<ArtifactSummary[]>(`/items/${itemId}/artifacts`),
   artifactMarkdown: (artifactId: string) =>
     requestBlob(`/artifacts/${artifactId}/markdown`),
+  resolveItemFulltext: (itemId: string) =>
+    request<{
+      id: string;
+      status: string;
+      job_type: string;
+      doi: string;
+      requeued: boolean;
+    }>(`/items/${itemId}/fulltext`, { method: "POST" }),
   jobs: () => request<Job[]>("/jobs?limit=500"),
   runNextJob: () =>
     request<Record<string, unknown>>("/jobs/run-next", { method: "POST" }),
