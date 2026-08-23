@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $root ".venv\Scripts\python.exe"
 $desktop = Join-Path $root "desktop"
+$npm = if ($IsWindows -or $env:OS -eq "Windows_NT") { "npm.cmd" } else { "npm" }
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Python environment not found: $python"
@@ -28,10 +29,10 @@ try {
     Push-Location $desktop
     try {
         if (-not $SkipNpmInstall) {
-            npm install --no-audit --no-fund
+            & $npm install --no-audit --no-fund
             if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
         }
-        npm run tauri build
+        & $npm run tauri build
         if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
     }
     finally {
