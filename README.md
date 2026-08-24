@@ -163,15 +163,63 @@ codex.cmd mcp list
 
 ### Codex Skills
 
-仓库提供五个可组合 Skill，分别负责 Zotero 增量同步、DOI/开放全文获取、PDF 解析、向量索引和
-基于证据的调研。数据管道仍由 ResearchBrain 管理，调研综合由 Codex 直接读取检索证据后完成，
-不再默认转交给内置问答模型。
+ResearchBrain 把稳定的数据管道与智能体推理解耦：SQLite、LanceDB、Zotero 水位、PDF 对象、
+MinerU/PyMuPDF 解析、MiniMax 向量和任务状态仍由本地服务管理；Codex Skills 负责选择工具、组合
+流程、核验状态和形成调研结论。调研 Skill 会让 Codex 直接阅读检索证据并综合，不再默认把问题
+转交给内置 DeepSeek 问答。
+
+| Skill                             | 主要功能                                                                         | 典型使用场景                     |
+| --------------------------------- | -------------------------------------------------------------------------------- | -------------------------------- |
+| `researchbrain-zotero-sync`       | 按 Zotero library version 增量同步题录、更新、删除记录和本地 PDF，并衔接后续任务 | 同步最近新增文献，检查漏同步附件 |
+| `researchbrain-doi-fulltext`      | DOI 规范化、去重、元数据导入、合法开放 PDF 获取、解析和向量化状态跟踪            | 批量导入 DOI，补齐可获取的全文   |
+| `researchbrain-pdf-ingest`        | 将指定 PDF 按 SHA-256 去重入库，使用 MinerU 解析，失败时回退 PyMuPDF，再生成向量 | PDF 转 Markdown，导入本地全文    |
+| `researchbrain-vector-index`      | 审计题录、摘要和解析全文的索引覆盖率，只为缺失部分排队                           | 增量向量化，修复缺失或失败向量   |
+| `researchbrain-evidence-research` | 本地全文优先检索，再扩展 Crossref、OpenAlex、arXiv、PubMed，由 Codex 综合证据    | 文献综述、方法比较、研究空白分析 |
+
+#### 安装与启用
+
+先注册 ResearchBrain MCP，再安装五个 Skills：
 
 ```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_codex_mcp.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_codex_skills.ps1
 ```
 
-重启 Codex 后生效。详细职责和后续独立仓库边界见 [Codex Skills 说明](docs/skills.md)。
+安装完成后重启 Codex，并用下面的命令确认 MCP 已启用：
+
+```powershell
+codex.cmd mcp get researchbrain
+```
+
+#### 如何调用
+
+在 Codex 对话中直接写 `$skill-name` 最稳定；也可以使用自然语言描述任务，让 Codex 自动选择匹配的
+Skill。示例：
+
+```text
+使用 $researchbrain-zotero-sync，把 Zotero 最近新增和修改的文献增量同步到“我的文献库”，
+随后补齐解析和向量，并列出失败或缺失的 PDF。
+
+使用 $researchbrain-doi-fulltext，把下面这些 DOI 导入“我的文献库”，查找合法开放 PDF，
+并分别报告题录、PDF、Markdown 和向量状态：
+10.xxxx/xxxxx
+10.xxxx/yyyyy
+
+使用 $researchbrain-pdf-ingest，把 F:\papers\example.pdf 关联到 DOI 10.xxxx/xxxxx 对应的文献，
+去重入库、转换为 Markdown，并确认全文向量是否完成。
+
+使用 $researchbrain-vector-index，审计“我的文献库”的题录、摘要和全文向量覆盖率，
+只处理缺失部分，并汇总失败原因。
+
+使用 $researchbrain-evidence-research，基于“我的文献库”调研某研究问题；先检索本地全文，
+不足时补充 Crossref、OpenAlex、arXiv 和 PubMed，比较数据、方法、结果、局限并列出 DOI。
+```
+
+这些 Skills 可以串联。例如执行“同步 Zotero → 解析新增 PDF → 补齐向量 → 开展调研”时，Codex 会
+依次使用同步、PDF、向量和证据调研 Skill。`queued` 或 `running` 只表示任务已经进入后台队列，只有
+任务状态为 `complete` 才能声称 PDF、Markdown 或向量已经完成。
+
+详细工作流、数据边界和后续独立仓库方案见 [Codex Skills 说明](docs/skills.md)。
 
 ## DeepSeek Harness 实验分支
 

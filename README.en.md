@@ -82,17 +82,48 @@ The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
 
 ## Codex Skills
 
-The repository includes five composable Skills for incremental Zotero synchronization, DOI and lawful-open-PDF
-ingestion, PDF-to-Markdown processing, vector-index completion, and evidence-grounded research. ResearchBrain
-owns deterministic data and job state; Codex reads retrieved evidence directly and performs the final synthesis.
+ResearchBrain separates deterministic data pipelines from agent reasoning. The local service owns SQLite,
+LanceDB, Zotero watermarks, PDF objects, MinerU/PyMuPDF parsing, MiniMax vectors, and job state. Codex Skills
+select and compose tools, verify terminal state, and synthesize retrieved evidence directly.
+
+| Skill                             | Capability                                                                  | Typical use                            |
+| --------------------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| `researchbrain-zotero-sync`       | Incrementally mirrors Zotero metadata, deletions, and local PDF attachments | Synchronize newly added Zotero papers  |
+| `researchbrain-doi-fulltext`      | Imports deduplicated DOIs and retrieves lawful open PDFs                    | Batch DOI and full-text acquisition    |
+| `researchbrain-pdf-ingest`        | Deduplicates PDFs, parses to Markdown, and queues full-text vectors         | Local PDF or PDF-to-Markdown ingestion |
+| `researchbrain-vector-index`      | Audits and fills missing metadata and full-text embeddings                  | Incremental vector-index maintenance   |
+| `researchbrain-evidence-research` | Combines local evidence with Crossref, OpenAlex, arXiv, and PubMed          | Reviews, comparisons, and gap analysis |
+
+### Install and enable
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_codex_mcp.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_codex_skills.ps1
+codex.cmd mcp get researchbrain
 ```
 
-Restart Codex after installation. See [ResearchBrain Codex Skills](docs/skills.md) for responsibilities and the
-boundary planned for a future standalone Skills repository.
+Restart Codex after installation. Explicit `$skill-name` invocation is the most predictable form, although Codex
+can also select a Skill from a natural-language request.
+
+```text
+Use $researchbrain-zotero-sync to incrementally sync Zotero into "My Library" and report missing PDFs.
+
+Use $researchbrain-doi-fulltext to import these DOIs, retrieve lawful open PDFs, and report metadata,
+PDF, Markdown, and vector status for each paper.
+
+Use $researchbrain-pdf-ingest to attach F:\papers\example.pdf to DOI 10.xxxx/xxxxx, parse it to Markdown,
+and verify full-text indexing.
+
+Use $researchbrain-vector-index to audit "My Library" and process only missing metadata or full-text vectors.
+
+Use $researchbrain-evidence-research to answer this research question from local full text first, then extend
+coverage with verified academic sources and include DOI-backed limitations.
+```
+
+Skills can be composed as Zotero sync → PDF parsing → vector completion → evidence research. A `queued` or
+`running` response is not completion; PDF, Markdown, or vectors are ready only after the corresponding job is
+`complete`. See [ResearchBrain Codex Skills](docs/skills.md) for detailed responsibilities and the boundary
+planned for a future standalone Skills repository.
 
 ## DeepSeek Harness branch
 
