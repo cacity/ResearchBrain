@@ -108,6 +108,33 @@ class JobService:
         self.session.flush()
         return job
 
+    def queue_fulltext_job(
+        self,
+        library_id: str,
+        item_id: str,
+        doi: str,
+        include_si: bool = False,
+    ) -> tuple[Job, bool]:
+        """Create a full-text job or requeue its terminal idempotent predecessor."""
+        job = self.create_fulltext_job(library_id, item_id, doi, include_si)
+        if job.status not in {
+            JobStatus.COMPLETE.value,
+            JobStatus.FAILED.value,
+            JobStatus.REVIEW_REQUIRED.value,
+            JobStatus.CANCELED.value,
+        }:
+            return job, False
+        job.status = JobStatus.QUEUED.value
+        job.progress = 0
+        job.attempt = 0
+        job.error_code = ""
+        job.error_message = ""
+        job.started_at = None
+        job.finished_at = None
+        job.next_retry_at = None
+        self.session.flush()
+        return job, True
+
     def retry_failed_jobs(
         self,
         library_id: str | None = None,
@@ -218,6 +245,50 @@ class JobService:
         self.session.add(job)
         self.session.flush()
         return job
+
+    def queue_document_embedding_job(
+        self,
+        library_id: str,
+        item_id: str,
+        attachment_id: str,
+        artifact_id: str,
+        *,
+        requeue_terminal: bool = False,
+    ) -> tuple[Job, bool]:
+        digest = hashlib.sha256(f"embed:{artifact_id}".encode()).hexdigest()
+        job = self.session.scalar(select(Job).where(Job.idempotency_key == digest))
+        if not job:
+            job = Job(
+                job_type=JobType.EMBED_DOCUMENT.value,
+                status=JobStatus.QUEUED.value,
+                idempotency_key=digest,
+                payload={
+                    "library_id": library_id,
+                    "item_id": item_id,
+                    "attachment_id": attachment_id,
+                    "artifact_id": artifact_id,
+                },
+            )
+            self.session.add(job)
+            self.session.flush()
+            return job, False
+        if requeue_terminal and job.status in {
+            JobStatus.COMPLETE.value,
+            JobStatus.FAILED.value,
+            JobStatus.REVIEW_REQUIRED.value,
+            JobStatus.CANCELED.value,
+        }:
+            job.status = JobStatus.QUEUED.value
+            job.progress = 0
+            job.attempt = 0
+            job.error_code = ""
+            job.error_message = ""
+            job.started_at = None
+            job.finished_at = None
+            job.next_retry_at = None
+            self.session.flush()
+            return job, True
+        return job, False
 
     def list_jobs(self, limit: int = 100) -> list[Job]:
         statement = select(Job).order_by(Job.created_at.desc()).limit(limit)

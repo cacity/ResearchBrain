@@ -71,6 +71,30 @@ class LanceIndex:
             replace=True,
         )
 
+    def bulk_upsert(self, artifact_ids: list[str], records: list[dict[str, Any]]) -> None:
+        """Replace many artifact partitions while rebuilding the FTS index once."""
+        if not artifact_ids or not records:
+            return
+        table = self._table(create=True)
+        for start in range(0, len(artifact_ids), 200):
+            batch = artifact_ids[start : start + 200]
+            values = ", ".join(f"'{_escape_sql(value)}'" for value in batch)
+            table.delete(f"artifact_id IN ({values})")
+        table.add(records)
+        from lancedb.index import FTS
+
+        table.create_index(
+            "text",
+            config=FTS(
+                base_tokenizer="ngram",
+                ngram_min_length=2,
+                ngram_max_length=3,
+                stem=False,
+                remove_stop_words=False,
+            ),
+            replace=True,
+        )
+
     def exists(self) -> bool:
         import lancedb
 

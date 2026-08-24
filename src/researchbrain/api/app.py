@@ -61,6 +61,7 @@ from researchbrain.fulltext.discovery import (
 )
 from researchbrain.fulltext.service import FullTextPipeline
 from researchbrain.fulltext.storage import DownloadError, ObjectStore
+from researchbrain.harness import HarnessInstallError, HarnessRuntimeManager
 from researchbrain.jobs.service import JobService
 from researchbrain.jobs.worker import JobWorker
 from researchbrain.library.repository import LibraryRepository
@@ -89,6 +90,8 @@ class AppState:
         self.minimax_group_id = str(saved.get("minimax_group_id") or settings.minimax_group_id)
         self.zotero_data_dir = Path(saved.get("zotero_data_dir") or settings.zotero_data_dir)
         self.mineru_executable = str(saved.get("mineru_executable") or settings.mineru_executable)
+        self.harness_port = int(saved.get("harness_port") or settings.harness_port)
+        self.harness = HarnessRuntimeManager(settings.data_dir)
 
 
 class LibraryResponse(BaseModel):
@@ -170,6 +173,11 @@ class RuntimeInstallRequest(BaseModel):
     version: str
     archive_path: str
     sha256: str
+
+
+class HarnessActionRequest(BaseModel):
+    library_id: str = ""
+    port: int = Field(default=3080, ge=1024, le=65535)
 
 
 class PublicConfigUpdateRequest(BaseModel):
@@ -279,6 +287,7 @@ def _item_pipeline_statuses(session: Session, library_id: str, item_ids: list[st
         .where(
             Job.job_type.in_(
                 [
+                    JobType.RESOLVE_FULLTEXT.value,
                     JobType.PARSE_DOCUMENT.value,
                     JobType.EMBED_DOCUMENT.value,
                     JobType.EMBED_METADATA.value,
@@ -316,6 +325,12 @@ def _item_pipeline_statuses(session: Session, library_id: str, item_ids: list[st
             state["pdf_status"] = "failed"
         elif "missing" in attachment_values:
             state["pdf_status"] = "missing"
+        else:
+            state["pdf_status"] = job_stage(
+                item_id,
+                JobType.RESOLVE_FULLTEXT.value,
+                False,
+            )
 
         if item_id in parsed_ids:
             state["parse_status"] = "ready"
@@ -445,6 +460,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     await parent_task
                 except asyncio.CancelledError:
                     pass
+            await asyncio.to_thread(state.harness.stop)
             state.database.engine.dispose()
 
     app = FastAPI(title="ResearchBrain", version=__version__, lifespan=lifespan)
@@ -606,6 +622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         public_settings["minimax_group_id"] = state.minimax_group_id
         public_settings["zotero_data_dir"] = str(state.zotero_data_dir)
         public_settings["mineru_executable"] = state.mineru_executable
+        public_settings["harness_port"] = state.harness_port
         public_settings["secrets"] = SecretStore().status()
         return public_settings
 
@@ -1134,6 +1151,47 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return asdict(state)
 
+    @app.get("/v1/harness/status")
+    def harness_status() -> dict:
+        return state.harness.status(state.harness_port)
+
+    @app.post("/v1/harness/install")
+    async def install_harness(request: HarnessActionRequest) -> dict:
+        if request.library_id:
+            with state.database.session() as session:
+                if not session.get(Library, request.library_id):
+                    raise HTTPException(status_code=404, detail="library not found")
+        state.harness_port = request.port
+        state.user_config.update({"harness_port": request.port})
+        try:
+            return await asyncio.to_thread(state.harness.install, request.library_id)
+        except (OSError, HarnessInstallError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/harness/start")
+    async def start_harness(request: HarnessActionRequest) -> dict:
+        if request.library_id:
+            with state.database.session() as session:
+                if not session.get(Library, request.library_id):
+                    raise HTTPException(status_code=404, detail="library not found")
+        state.harness_port = request.port
+        state.user_config.update({"harness_port": request.port})
+        try:
+            return await asyncio.to_thread(
+                state.harness.start,
+                request.port,
+                request.library_id,
+                SecretStore().get("deepseek_api_key"),
+                resolved_settings.deepseek_base_url,
+                resolved_settings.deepseek_model,
+            )
+        except (OSError, HarnessInstallError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/harness/stop")
+    async def stop_harness() -> dict:
+        return await asyncio.to_thread(state.harness.stop)
+
     @app.get("/v1/libraries/{library_id}/items")
     def list_items(
         library_id: str,
@@ -1277,6 +1335,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "reused": reused,
                 "parse_job_id": job.id,
             }
+
+    @app.post("/v1/items/{item_id}/fulltext", status_code=202)
+    def queue_item_fulltext(item_id: str, session: SessionDependency) -> dict:
+        item = session.get(Item, item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="item not found")
+        stored_pdf = session.scalar(
+            select(Attachment.id)
+            .where(Attachment.item_id == item_id)
+            .where(Attachment.status == "stored")
+            .where(
+                (func.lower(Attachment.mime) == "application/pdf")
+                | func.lower(Attachment.logical_name).like("%.pdf")
+                | func.lower(Attachment.object_path).like("%.pdf")
+            )
+            .limit(1)
+        )
+        if stored_pdf:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "pdf_already_available", "message": "PDF is already stored"},
+            )
+        doi = session.scalar(
+            select(Identifier.normalized_value)
+            .where(Identifier.item_id == item_id)
+            .where(Identifier.scheme == "doi")
+            .order_by(Identifier.is_primary.desc())
+            .limit(1)
+        )
+        if not doi:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "doi_missing",
+                    "message": "该文献没有 DOI，无法自动查找 PDF；请选择本地 PDF 文件",
+                },
+            )
+        job, requeued = JobService(session).queue_fulltext_job(
+            item.library_id,
+            item.id,
+            normalize_doi(doi),
+            include_si=False,
+        )
+        return {
+            "id": job.id,
+            "status": job.status,
+            "job_type": job.job_type,
+            "doi": normalize_doi(doi),
+            "requeued": requeued,
+        }
 
     @app.get("/v1/items/{item_id}/attachments")
     def list_item_attachments(item_id: str, session: SessionDependency) -> list[dict]:

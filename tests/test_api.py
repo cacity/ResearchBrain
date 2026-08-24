@@ -66,6 +66,20 @@ def test_health_and_doi_batch(settings):
         assert rejected.status_code == 409
 
 
+def test_harness_status_is_available_without_installing_runtime(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.get("/v1/harness/status")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["configured"] is False
+        assert body["running"] is False
+        assert body["port"] == 3080
+        assert body["url"] == "http://127.0.0.1:3080"
+        assert body["dsh_package"].startswith("@deepseek-ai/dsh@")
+
+
 def test_local_session_token_is_enforced(settings, monkeypatch):
     monkeypatch.setenv("RESEARCHBRAIN_SESSION_TOKEN", "test-token")
     app = create_app(settings)
@@ -124,6 +138,67 @@ def test_manual_pdf_upload_is_stored_and_queued(settings):
         assert listed[0]["fulltext_embedding_status"] == "none"
         assert listed[0]["knowledge_state"] == "pdf_stored"
         assert listed[0]["next_action"] == "parse_pdf"
+
+
+def test_item_fulltext_endpoint_queues_and_retries_doi_download(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        library_id = client.post(
+            "/v1/libraries",
+            json={"name": "DOI full text", "mode": "standalone"},
+        ).json()["id"]
+        with app.state.researchbrain.database.session() as session:
+            repository = LibraryRepository(session)
+            item, _ = repository.add_reference(
+                library_id,
+                ReferenceRecord(
+                    title="Open paper",
+                    identifiers={"doi": "10.1000/open-paper"},
+                ),
+                "fixture",
+            )
+            without_doi, _ = repository.add_reference(
+                library_id,
+                ReferenceRecord(title="Paper without DOI"),
+                "fixture",
+            )
+            item_id = item.id
+            without_doi_id = without_doi.id
+
+        queued = client.post(f"/v1/items/{item_id}/fulltext")
+
+        assert queued.status_code == 202
+        assert queued.json()["status"] == "queued"
+        assert queued.json()["job_type"] == "resolve_fulltext"
+        assert queued.json()["doi"] == "10.1000/open-paper"
+        assert queued.json()["requeued"] is False
+        job_id = queued.json()["id"]
+        listed = client.get(f"/v1/libraries/{library_id}/items").json()
+        current = next(value for value in listed if value["id"] == item_id)
+        assert current["pdf_status"] == "queued"
+
+        repeated = client.post(f"/v1/items/{item_id}/fulltext")
+        assert repeated.json()["id"] == job_id
+        assert repeated.json()["requeued"] is False
+
+        with app.state.researchbrain.database.session() as session:
+            job = session.get(Job, job_id)
+            assert job is not None
+            job.status = "review_required"
+            job.error_code = "no_oa_fulltext"
+            job.error_message = "No downloadable open PDF"
+        listed = client.get(f"/v1/libraries/{library_id}/items").json()
+        current = next(value for value in listed if value["id"] == item_id)
+        assert current["pdf_status"] == "review_required"
+
+        retried = client.post(f"/v1/items/{item_id}/fulltext")
+        assert retried.json()["id"] == job_id
+        assert retried.json()["status"] == "queued"
+        assert retried.json()["requeued"] is True
+
+        missing = client.post(f"/v1/items/{without_doi_id}/fulltext")
+        assert missing.status_code == 422
+        assert missing.json()["detail"]["code"] == "doi_missing"
 
 
 def test_doi_lookup_groups_zotero_duplicates_and_checks_exact_pdf(settings):

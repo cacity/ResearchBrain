@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -219,22 +218,12 @@ class JobWorker:
                 job = session.get(Job, job_id)
                 if not job:
                     raise RuntimeError(f"job disappeared: {job_id}")
-                digest = hashlib.sha256(f"embed:{result.artifact_id}".encode()).hexdigest()
-                existing = session.scalar(select(Job).where(Job.idempotency_key == digest))
-                if not existing:
-                    session.add(
-                        Job(
-                            job_type=JobType.EMBED_DOCUMENT.value,
-                            status=JobStatus.QUEUED.value,
-                            idempotency_key=digest,
-                            payload={
-                                "library_id": payload["library_id"],
-                                "item_id": payload["item_id"],
-                                "attachment_id": payload["attachment_id"],
-                                "artifact_id": result.artifact_id,
-                            },
-                        )
-                    )
+                JobService(session).queue_document_embedding_job(
+                    str(payload["library_id"]),
+                    str(payload["item_id"]),
+                    str(payload["attachment_id"]),
+                    result.artifact_id,
+                )
                 job.status = JobStatus.COMPLETE.value
                 job.progress = 100
                 job.result = {

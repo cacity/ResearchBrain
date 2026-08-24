@@ -1,0 +1,9 @@
+interface:
+  display_name: "ResearchBrain PDF Ingest"
+  short_description: "Parse PDFs to Markdown and prepare full-text vectors"
+  default_prompt: "Use $researchbrain-pdf-ingest to process the selected PDF and verify its Markdown and vector status."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "researchbrain"
+      description: "Local ResearchBrain PDF, parser, and vector job tools"

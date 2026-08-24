@@ -1,0 +1,19 @@
+- insert:
+    - id: mcp-researchbrain
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: researchbrain
+        transport: stdio
+        command: !!js process.env.RESEARCHBRAIN_MCP_COMMAND
+        args: !!js JSON.parse(process.env.RESEARCHBRAIN_MCP_ARGS || '[]')
+        env:
+          RESEARCHBRAIN_DATA_DIR: !!js process.env.RESEARCHBRAIN_DATA_DIR
+          RESEARCHBRAIN_DEFAULT_LIBRARY_ID: !!js process.env.RESEARCHBRAIN_DEFAULT_LIBRARY_ID || ''
+        cwd: !!js process.env.RESEARCHBRAIN_HARNESS_WORKSPACE
+        toolCallTimeoutMs: 180000
+        failOnStartupError: true
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10

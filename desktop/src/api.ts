@@ -206,12 +206,33 @@ export type ConfigStatus = {
   minimax_group_id: string;
   zotero_data_dir: string;
   mineru_executable: string;
+  harness_port: number;
   secrets: {
     minimax_api_key: boolean;
     deepseek_api_key: boolean;
     ncbi_api_key: boolean;
     openalex_api_key: boolean;
   };
+};
+
+export type HarnessStatus = {
+  available: boolean;
+  configured: boolean;
+  running: boolean;
+  owned_process: boolean;
+  port: number;
+  url: string;
+  dsh_package: string;
+  node: {
+    command: string;
+    version: string;
+    source: string;
+    supported: boolean;
+  };
+  profile_path: string;
+  workspace_path: string;
+  log_path: string;
+  error: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -320,6 +341,14 @@ export const api = {
     request<ArtifactSummary[]>(`/items/${itemId}/artifacts`),
   artifactMarkdown: (artifactId: string) =>
     requestBlob(`/artifacts/${artifactId}/markdown`),
+  resolveItemFulltext: (itemId: string) =>
+    request<{
+      id: string;
+      status: string;
+      job_type: string;
+      doi: string;
+      requeued: boolean;
+    }>(`/items/${itemId}/fulltext`, { method: "POST" }),
   jobs: () => request<Job[]>("/jobs?limit=500"),
   runNextJob: () =>
     request<Record<string, unknown>>("/jobs/run-next", { method: "POST" }),
@@ -421,4 +450,17 @@ export const api = {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<string>("register_codex_mcp");
   },
+  harnessStatus: () => request<HarnessStatus>("/harness/status"),
+  installHarness: (libraryId: string, port: number) =>
+    request<HarnessStatus>("/harness/install", {
+      method: "POST",
+      body: JSON.stringify({ library_id: libraryId, port }),
+    }),
+  startHarness: (libraryId: string, port: number) =>
+    request<HarnessStatus>("/harness/start", {
+      method: "POST",
+      body: JSON.stringify({ library_id: libraryId, port }),
+    }),
+  stopHarness: () =>
+    request<HarnessStatus>("/harness/stop", { method: "POST" }),
 };

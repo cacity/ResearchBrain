@@ -442,6 +442,38 @@ button {
   align-items: center;
   gap: 6px;
 }
+.pdf-pipeline-control {
+  position: relative;
+  min-width: 0;
+}
+.pdf-pipeline-control .pipeline-indicator {
+  width: 100%;
+}
+.pdf-pipeline-control:has(.pipeline-upload) .pipeline-indicator {
+  padding-right: 20px;
+}
+.pipeline-upload {
+  position: absolute;
+  top: 9px;
+  right: 2px;
+  width: 18px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid #d4dcd7;
+  padding: 0 0 0 2px;
+  color: #66736c;
+  background: transparent;
+  cursor: pointer;
+}
+.pipeline-upload:hover {
+  color: #17633e;
+}
+.pipeline-upload:focus-visible {
+  outline: 2px solid #2f8058;
+  outline-offset: 1px;
+}
 .pipeline-indicator {
   min-width: 0;
   height: 38px;
@@ -1006,6 +1038,84 @@ button {
   margin: 0 auto;
   padding: 30px 32px 60px;
 }
+
+.harness-page {
+  height: 100%;
+  overflow: auto;
+  padding: 24px 28px 40px;
+}
+
+.harness-toolbar {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #dfe4e1;
+  flex-wrap: wrap;
+}
+
+.harness-toolbar label {
+  display: grid;
+  gap: 6px;
+  color: #6f7b74;
+  font-size: 13px;
+}
+
+.harness-toolbar input {
+  width: 112px;
+  height: 38px;
+  border: 1px solid #cbd3ce;
+  border-radius: 6px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #202522;
+}
+
+.harness-open {
+  text-decoration: none;
+}
+
+.harness-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border-left: 3px solid #c85858;
+  background: #fff1f1;
+  color: #9e3434;
+}
+
+.harness-status-list {
+  margin-top: 22px;
+  border-top: 1px solid #dfe4e1;
+}
+
+.harness-status-list > div,
+.harness-paths > div {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid #dfe4e1;
+}
+
+.harness-status-list > div > span:first-child,
+.harness-paths span {
+  color: #6f7b74;
+}
+
+.harness-paths {
+  margin-top: 28px;
+}
+
+.harness-paths code {
+  max-width: min(70%, 760px);
+  overflow-wrap: anywhere;
+  text-align: right;
+  color: #202522;
+}
 .section-heading {
   margin-bottom: 22px;
   border-bottom: 1px solid #dfe4e1;
@@ -1551,6 +1661,19 @@ button {
   .form-page,
   .settings-page {
     padding: 22px 15px 50px;
+  }
+  .harness-page {
+    padding: 22px 20px 50px;
+  }
+  .harness-paths > div {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+    padding: 11px 0;
+  }
+  .harness-paths code {
+    max-width: 100%;
+    text-align: left;
   }
   .settings-grid {
     grid-template-columns: 1fr;

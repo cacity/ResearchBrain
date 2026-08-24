@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.1.8 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.1.9 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 
@@ -41,6 +41,8 @@ device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreS
 - Hands searches off to Google Scholar in the browser instead of relying on unstable page scraping.
 - Exports CSL-JSON, BibTeX, RIS, DOI lists, and Markdown.
 - Exposes the same local corpus through the desktop app, FastAPI, CLI, and stdio MCP.
+- On the experimental `feature/deepseek-harness` branch, launches an isolated DeepSeek Harness Web profile
+  that uses ResearchBrain MCP tools and a strict literature-research Skill for multi-step investigations.
 
 ## Safety and scope
 
@@ -77,6 +79,61 @@ npm run tauri dev
 
 Configure provider credentials in the desktop settings so they are stored in Windows Credential Manager.
 The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
+
+## Codex Skills
+
+ResearchBrain separates deterministic data pipelines from agent reasoning. The local service owns SQLite,
+LanceDB, Zotero watermarks, PDF objects, MinerU/PyMuPDF parsing, MiniMax vectors, and job state. Codex Skills
+select and compose tools, verify terminal state, and synthesize retrieved evidence directly.
+
+| Skill                             | Capability                                                                  | Typical use                            |
+| --------------------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| `researchbrain-zotero-sync`       | Incrementally mirrors Zotero metadata, deletions, and local PDF attachments | Synchronize newly added Zotero papers  |
+| `researchbrain-doi-fulltext`      | Imports deduplicated DOIs and retrieves lawful open PDFs                    | Batch DOI and full-text acquisition    |
+| `researchbrain-pdf-ingest`        | Deduplicates PDFs, parses to Markdown, and queues full-text vectors         | Local PDF or PDF-to-Markdown ingestion |
+| `researchbrain-vector-index`      | Audits and fills missing metadata and full-text embeddings                  | Incremental vector-index maintenance   |
+| `researchbrain-evidence-research` | Combines local evidence with Crossref, OpenAlex, arXiv, and PubMed          | Reviews, comparisons, and gap analysis |
+
+### Install and enable
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_codex_mcp.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_codex_skills.ps1
+codex.cmd mcp get researchbrain
+```
+
+Restart Codex after installation. Explicit `$skill-name` invocation is the most predictable form, although Codex
+can also select a Skill from a natural-language request.
+
+```text
+Use $researchbrain-zotero-sync to incrementally sync Zotero into "My Library" and report missing PDFs.
+
+Use $researchbrain-doi-fulltext to import these DOIs, retrieve lawful open PDFs, and report metadata,
+PDF, Markdown, and vector status for each paper.
+
+Use $researchbrain-pdf-ingest to attach F:\papers\example.pdf to DOI 10.xxxx/xxxxx, parse it to Markdown,
+and verify full-text indexing.
+
+Use $researchbrain-vector-index to audit "My Library" and process only missing metadata or full-text vectors.
+
+Use $researchbrain-evidence-research to answer this research question from local full text first, then extend
+coverage with verified academic sources and include DOI-backed limitations.
+```
+
+Skills can be composed as Zotero sync → PDF parsing → vector completion → evidence research. A `queued` or
+`running` response is not completion; PDF, Markdown, or vectors are ready only after the corresponding job is
+`complete`. See [ResearchBrain Codex Skills](docs/skills.md) for detailed responsibilities and the boundary
+planned for a future standalone Skills repository.
+
+## DeepSeek Harness branch
+
+The `feature/deepseek-harness` branch manages the official Harness Web profile instead of reimplementing its
+agent loop. The **Deep Research** view detects Node.js, installs a verified portable Node 24 runtime when the
+system version is below `22.19`, installs a pinned DSH release, and links the ResearchBrain MCP bundle. Harness
+runs in an isolated workspace and accesses the literature database only through MCP. Write operations such as
+DOI import and lawful open-full-text resolution remain explicit queued tools.
+
+See [DeepSeek Harness integration](docs/deepseek-harness.md) for setup, security boundaries, and rollback.
 
 ## Quality gate
 
