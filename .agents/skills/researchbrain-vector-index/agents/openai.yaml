@@ -1,0 +1,9 @@
+interface:
+  display_name: "ResearchBrain Vector Index"
+  short_description: "Build and audit incremental literature vector indexes"
+  default_prompt: "Use $researchbrain-vector-index to audit this library and queue only its missing metadata and full-text vector jobs."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "researchbrain"
+      description: "Local ResearchBrain literature database and job tools"

@@ -44,6 +44,12 @@ def get_item(item_id: str) -> dict:
 
 
 @mcp.tool(annotations=READ_ONLY)
+def item_status(item_id: str) -> dict:
+    """Report whether one item has DOI metadata, a stored PDF, parsed text, and current vectors."""
+    return tools.item_status(item_id)
+
+
+@mcp.tool(annotations=READ_ONLY)
 async def search_library(library_id: str, query: str, limit: int = 10) -> list[dict]:
     """Hybrid-search local full text and return page-grounded evidence chunks."""
     return await tools.search_library(library_id, query, limit)
@@ -71,6 +77,24 @@ def import_dois(library_id: str, dois: list[str], include_si: bool = False) -> d
     return tools.import_dois(library_id, dois, include_si)
 
 
+@mcp.tool(annotations=WRITE_QUEUE)
+def sync_zotero(library_id: str) -> dict:
+    """Queue an incremental Zotero metadata and local-PDF synchronization for a mirror library."""
+    return tools.sync_zotero(library_id)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
+def queue_library_index(library_id: str) -> dict:
+    """Queue missing metadata and parsed-full-text embeddings for one library."""
+    return tools.queue_library_index(library_id)
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -82,6 +106,18 @@ def import_dois(library_id: str, dois: list[str], include_si: bool = False) -> d
 def queue_fulltext(item_id: str, include_si: bool = False) -> dict:
     """Queue lawful open-access PDF discovery, parsing, and downstream embedding for an item."""
     return tools.queue_fulltext(item_id, include_si)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
+async def attach_local_pdf(item_id: str, pdf_path: str) -> dict:
+    """Attach one user-selected local PDF, deduplicate it, and queue parsing and embedding."""
+    return await tools.attach_local_pdf(item_id, pdf_path)
 
 
 @mcp.tool(annotations=READ_ONLY)

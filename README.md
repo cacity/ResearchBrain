@@ -147,6 +147,10 @@ ResearchBrain/
 - `search_online`
 - `import_dois`
 - `queue_fulltext`
+- `item_status`
+- `sync_zotero`
+- `attach_local_pdf`
+- `queue_library_index`
 - `list_jobs`
 - `export_references`
 
@@ -156,6 +160,18 @@ ResearchBrain/
 .\scripts\register_codex_mcp.ps1
 codex.cmd mcp list
 ```
+
+### Codex Skills
+
+仓库提供五个可组合 Skill，分别负责 Zotero 增量同步、DOI/开放全文获取、PDF 解析、向量索引和
+基于证据的调研。数据管道仍由 ResearchBrain 管理，调研综合由 Codex 直接读取检索证据后完成，
+不再默认转交给内置问答模型。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_codex_skills.ps1
+```
+
+重启 Codex 后生效。详细职责和后续独立仓库边界见 [Codex Skills 说明](docs/skills.md)。
 
 ## DeepSeek Harness 实验分支
 

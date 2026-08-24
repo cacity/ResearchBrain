@@ -80,6 +80,20 @@ npm run tauri dev
 Configure provider credentials in the desktop settings so they are stored in Windows Credential Manager.
 The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
 
+## Codex Skills
+
+The repository includes five composable Skills for incremental Zotero synchronization, DOI and lawful-open-PDF
+ingestion, PDF-to-Markdown processing, vector-index completion, and evidence-grounded research. ResearchBrain
+owns deterministic data and job state; Codex reads retrieved evidence directly and performs the final synthesis.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_codex_mcp.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install_codex_skills.ps1
+```
+
+Restart Codex after installation. See [ResearchBrain Codex Skills](docs/skills.md) for responsibilities and the
+boundary planned for a future standalone Skills repository.
+
 ## DeepSeek Harness branch
 
 The `feature/deepseek-harness` branch manages the official Harness Web profile instead of reimplementing its

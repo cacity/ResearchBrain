@@ -1,0 +1,9 @@
+interface:
+  display_name: "ResearchBrain DOI Full Text"
+  short_description: "Import DOI metadata and retrieve lawful open PDFs"
+  default_prompt: "Use $researchbrain-doi-fulltext to import these DOIs, retrieve lawful open PDFs, and report exact processing status."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "researchbrain"
+      description: "Local ResearchBrain DOI, full-text, and job tools"

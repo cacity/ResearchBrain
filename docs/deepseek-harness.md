@@ -56,6 +56,7 @@ Read-only tools:
 - `list_libraries`
 - `library_status`
 - `get_item`
+- `item_status`
 - `search_library`
 - `ask_library`
 - `search_online`
@@ -66,6 +67,9 @@ Queued write tools:
 
 - `import_dois`
 - `queue_fulltext`
+- `sync_zotero`
+- `attach_local_pdf`
+- `queue_library_index`
 
 The write tools do not report work as complete when they only create a queue
 entry. The Skill requires the agent to inspect `list_jobs` before making claims
