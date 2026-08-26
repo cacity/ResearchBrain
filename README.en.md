@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.1.9 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.2.0 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 
@@ -43,6 +43,8 @@ device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreS
 - Exposes the same local corpus through the desktop app, FastAPI, CLI, and stdio MCP.
 - On the experimental `feature/deepseek-harness` branch, launches an isolated DeepSeek Harness Web profile
   that uses ResearchBrain MCP tools and a strict literature-research Skill for multi-step investigations.
+- Installs third-party filesystem Skills from a local folder, ZIP, or GitHub; validates dependencies and
+  file safety; and manages enable, update, uninstall, and isolated Harness deployment.
 
 ## Safety and scope
 
@@ -132,6 +134,20 @@ agent loop. The **Deep Research** view detects Node.js, installs a verified port
 system version is below `22.19`, installs a pinned DSH release, and links the ResearchBrain MCP bundle. Harness
 runs in an isolated workspace and accesses the literature database only through MCP. Write operations such as
 DOI import and lawful open-full-text resolution remain explicit queued tools.
+
+The **Skills** view accepts local Skill directories, local ZIP archives, and `https://github.com/...`
+repositories. A repository containing multiple Skills requires a subpath; a branch, tag, or commit can be
+pinned. Third-party Skills are disabled by default. Their MCP dependencies, local-script permissions, and
+compatibility state are shown before use, and Harness must restart after an enable, update, or uninstall.
+
+ResearchBrain bundles its Zotero sync, DOI/full-text, PDF ingest, vector-index, evidence-research, and general
+literature Skills, so they are available to Harness without copying them from a Codex installation.
+
+Installation reads and copies files but does not execute third-party code. ResearchBrain rejects ZIP path
+traversal, symbolic links, invalid `SKILL.md` frontmatter, built-in name conflicts, and oversized packages.
+Skills containing scripts require review, while Skills declaring additional MCP servers require those services
+to be configured. The play action starts Harness with the current library and copies an explicit
+`$skill-name` prompt; actual capabilities remain bounded by configured Harness tools and user permissions.
 
 See [DeepSeek Harness integration](docs/deepseek-harness.md) for setup, security boundaries, and rollback.
 

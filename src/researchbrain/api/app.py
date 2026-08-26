@@ -72,6 +72,7 @@ from researchbrain.retrieval.minimax import EmbeddingError, MiniMaxEmbedder
 from researchbrain.retrieval.service import EmbeddingPipeline
 from researchbrain.runtime.manager import RuntimeInstallError, RuntimeManager
 from researchbrain.secrets import SecretStore, SecretStoreError
+from researchbrain.skills import SkillError
 from researchbrain.zotero.attachments import ZoteroAttachmentImporter
 from researchbrain.zotero.client import ZoteroConnectionError, ZoteroLocalClient
 
@@ -177,6 +178,23 @@ class RuntimeInstallRequest(BaseModel):
 
 class HarnessActionRequest(BaseModel):
     library_id: str = ""
+    port: int = Field(default=3080, ge=1024, le=65535)
+
+
+class SkillInstallRequest(BaseModel):
+    source_kind: Literal["local", "archive", "github"]
+    source: str = Field(min_length=1, max_length=2048)
+    ref: str = Field(default="", max_length=255)
+    subpath: str = Field(default="", max_length=1024)
+    enabled: bool = False
+
+
+class SkillEnableRequest(BaseModel):
+    enabled: bool
+
+
+class SkillLaunchRequest(BaseModel):
+    library_id: str
     port: int = Field(default=3080, ge=1024, le=65535)
 
 
@@ -1191,6 +1209,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/harness/stop")
     async def stop_harness() -> dict:
         return await asyncio.to_thread(state.harness.stop)
+
+    @app.get("/v1/skills")
+    def list_skills() -> list[dict]:
+        return state.harness.skills.list()
+
+    @app.post("/v1/skills", status_code=201)
+    async def install_skill(request: SkillInstallRequest) -> dict:
+        try:
+            return await asyncio.to_thread(
+                state.harness.skills.install,
+                request.source_kind,
+                request.source,
+                ref=request.ref,
+                subpath=request.subpath,
+                enabled=request.enabled,
+            )
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/{name}/update")
+    async def update_skill(name: str) -> dict:
+        try:
+            return await asyncio.to_thread(state.harness.skills.update, name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/v1/skills/{name}/enabled")
+    def enable_skill(name: str, request: SkillEnableRequest) -> dict:
+        try:
+            return state.harness.skills.set_enabled(name, request.enabled)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/v1/skills/{name}", status_code=204)
+    def uninstall_skill(name: str) -> None:
+        try:
+            state.harness.skills.uninstall(name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/{name}/reveal")
+    async def reveal_skill(name: str) -> dict:
+        try:
+            path = await asyncio.to_thread(state.harness.skills.reveal, name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"path": path}
+
+    @app.post("/v1/skills/{name}/launch")
+    async def launch_skill(name: str, request: SkillLaunchRequest) -> dict:
+        with state.database.session() as session:
+            library = session.get(Library, request.library_id)
+            if not library:
+                raise HTTPException(status_code=404, detail="library not found")
+            library_name = library.name
+        try:
+            prompt = state.harness.skills.launch_prompt(name, library_name)
+            current = state.harness.status(request.port)
+            if not current["configured"]:
+                raise SkillError("Install the Harness environment before using a Skill")
+            if current["running"] and current["skills"]["restart_required"]:
+                if not current["owned_process"]:
+                    raise SkillError(
+                        "Harness is running outside ResearchBrain; stop it before deploying changed Skills"
+                    )
+                await asyncio.to_thread(state.harness.stop)
+            status = await asyncio.to_thread(
+                state.harness.start,
+                request.port,
+                request.library_id,
+                SecretStore().get("deepseek_api_key"),
+                resolved_settings.deepseek_base_url,
+                resolved_settings.deepseek_model,
+            )
+        except (OSError, HarnessInstallError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"skill": name, "prompt": prompt, "harness": status}
 
     @app.get("/v1/libraries/{library_id}/items")
     def list_items(

@@ -36,4 +36,23 @@ tests, and examples. Keep the database engine in ResearchBrain and depend on the
 tool name. Version the MCP contract independently and test required tool availability before each workflow.
 
 Do not move provider credentials into Skill files. Do not let Skills infer job completion from queue creation.
+
+## ResearchBrain Skill manager
+
+The desktop **Skills** view also manages filesystem Skills for DeepSeek Harness. It accepts:
+
+- a local directory containing one `SKILL.md`;
+- a local ZIP archive;
+- an HTTPS GitHub repository, with optional ref and subpath.
+
+Managed copies live under `%LOCALAPPDATA%\ResearchBrain\skills\packages\<name>\<sha256>`. The JSON registry
+records source, hash, dependencies, permissions, compatibility, and enable state. Enabled compatible Skills are
+copied to `%LOCALAPPDATA%\ResearchBrain\harness\workspace\.agents\skills` when Harness starts. ResearchBrain
+tracks only its own deployed names and does not delete unrelated folders from that workspace.
+
+Installation rejects unsafe archive paths, symbolic links, invalid or missing frontmatter, duplicate built-in
+names, more than 2,000 files, and packages larger than 200 MB after extraction. GitHub downloads are restricted
+to `https://github.com`. A Skill that includes scripts is marked `review_required`; a Skill needing an MCP server
+other than `researchbrain` is marked `needs_configuration`; unsupported dependency types are `incompatible`.
+Enabling a Skill never executes it. Execution occurs only after the user starts Harness and invokes the Skill.
 The backend remains the authority for item identity, SHA-256 deduplication, Zotero watermarks, and pipeline state.

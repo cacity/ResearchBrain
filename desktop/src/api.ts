@@ -233,6 +233,43 @@ export type HarnessStatus = {
   workspace_path: string;
   log_path: string;
   error: string;
+  skills: {
+    installed: number;
+    enabled: number;
+    issues: number;
+    deployed: string[];
+    restart_required: boolean;
+  };
+};
+
+export type SkillDependency = {
+  type: string;
+  value: string;
+  description: string;
+};
+
+export type SkillRecord = {
+  name: string;
+  description: string;
+  default_prompt: string;
+  compatibility:
+    | "compatible"
+    | "review_required"
+    | "needs_configuration"
+    | "incompatible";
+  dependencies: SkillDependency[];
+  permissions: string[];
+  file_count: number;
+  source_kind: "builtin" | "local" | "archive" | "github";
+  source: string;
+  source_ref: string;
+  source_subpath: string;
+  sha256: string;
+  enabled: boolean;
+  builtin: boolean;
+  managed_path: string;
+  installed_at: string;
+  updated_at: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -257,6 +294,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
           : JSON.stringify(payload.detail);
     throw new Error(detail || `HTTP ${response.status}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -463,4 +501,39 @@ export const api = {
     }),
   stopHarness: () =>
     request<HarnessStatus>("/harness/stop", { method: "POST" }),
+  skills: () => request<SkillRecord[]>("/skills"),
+  installSkill: (input: {
+    source_kind: "local" | "archive" | "github";
+    source: string;
+    ref: string;
+    subpath: string;
+    enabled: boolean;
+  }) =>
+    request<SkillRecord>("/skills", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateSkill: (name: string) =>
+    request<SkillRecord>(`/skills/${encodeURIComponent(name)}/update`, {
+      method: "POST",
+    }),
+  enableSkill: (name: string, enabled: boolean) =>
+    request<SkillRecord>(`/skills/${encodeURIComponent(name)}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+  uninstallSkill: (name: string) =>
+    request<void>(`/skills/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  revealSkill: (name: string) =>
+    request<{ path: string }>(`/skills/${encodeURIComponent(name)}/reveal`, {
+      method: "POST",
+    }),
+  launchSkill: (name: string, libraryId: string, port: number) =>
+    request<{ skill: string; prompt: string; harness: HarnessStatus }>(
+      `/skills/${encodeURIComponent(name)}/launch`,
+      {
+        method: "POST",
+        body: JSON.stringify({ library_id: libraryId, port }),
+      },
+    ),
 };

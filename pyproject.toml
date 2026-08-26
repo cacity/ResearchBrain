@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "researchbrain"
-version = "0.1.9"
+version = "0.2.0"
 description = "Local-first literature library and evidence-grounded research agent"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -60,6 +60,9 @@ researchbrain = "researchbrain.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/researchbrain"]
+
+[tool.hatch.build.targets.wheel.force-include]
+".agents/skills" = "researchbrain/builtin_skills"
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"

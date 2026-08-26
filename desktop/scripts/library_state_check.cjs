@@ -52,7 +52,64 @@ function json(route, body) {
                 workspace_path: "C:\\ResearchBrain\\harness\\workspace",
                 log_path: "C:\\ResearchBrain\\harness\\harness.log",
                 error: "",
+                skills: {
+                    installed: 2,
+                    enabled: 1,
+                    issues: 1,
+                    deployed: ["researchbrain-literature"],
+                    restart_required: false,
+                },
             });
+        }
+        if (pathname === "/v1/skills") {
+            return json(route, [
+                {
+                    name: "researchbrain-literature",
+                    description: "Built-in evidence research workflow.",
+                    default_prompt: "Use $researchbrain-literature.",
+                    compatibility: "compatible",
+                    dependencies: [
+                        {
+                            type: "mcp",
+                            value: "researchbrain",
+                            description: "Local literature tools",
+                        },
+                    ],
+                    permissions: ["调用 ResearchBrain MCP 工具"],
+                    file_count: 1,
+                    source_kind: "builtin",
+                    source: "ResearchBrain",
+                    source_ref: "",
+                    source_subpath: "",
+                    sha256: "",
+                    enabled: true,
+                    builtin: true,
+                    managed_path: "",
+                    installed_at: "",
+                    updated_at: "",
+                },
+                {
+                    name: "third-party-review",
+                    description:
+                        "A third-party review Skill with local scripts that require inspection before use.",
+                    default_prompt: "Use $third-party-review.",
+                    compatibility: "review_required",
+                    dependencies: [],
+                    permissions: ["执行 Skill 附带的本地脚本"],
+                    file_count: 4,
+                    source_kind: "github",
+                    source: "https://github.com/example/review-skill",
+                    source_ref: "main",
+                    source_subpath: "",
+                    sha256: "abc",
+                    enabled: false,
+                    builtin: false,
+                    managed_path:
+                        "C:\\ResearchBrain\\skills\\third-party-review",
+                    installed_at: "2026-08-26T00:00:00Z",
+                    updated_at: "2026-08-26T00:00:00Z",
+                },
+            ]);
         }
         if (pathname === "/v1/libraries") {
             return json(route, [
@@ -198,39 +255,63 @@ function json(route, body) {
         "researchbrain-harness.png",
     );
     await page.screenshot({ path: harnessOutput, fullPage: true });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.getByTitle("打开菜单").click();
-    await page.getByRole("button", { name: "深度调研" }).click();
-    await page.waitForTimeout(300);
-    const mobileHarnessLayout = await page.evaluate(() => ({
+    await page.getByRole("button", { name: "Skills", exact: true }).click();
+    await page.getByText("third-party-review").waitFor();
+    const skillsLayout = await page.evaluate(() => ({
         viewportWidth: document.documentElement.clientWidth,
         scrollWidth: document.documentElement.scrollWidth,
-        pageScrollWidth: document.querySelector(".harness-page")?.scrollWidth,
-        pageClientWidth: document.querySelector(".harness-page")?.clientWidth,
+        pageScrollWidth: document.querySelector(".skills-page")?.scrollWidth,
+        pageClientWidth: document.querySelector(".skills-page")?.clientWidth,
     }));
     if (
-        mobileHarnessLayout.scrollWidth > mobileHarnessLayout.viewportWidth ||
-        Number(mobileHarnessLayout.pageScrollWidth) >
-            Number(mobileHarnessLayout.pageClientWidth)
+        skillsLayout.scrollWidth > skillsLayout.viewportWidth ||
+        Number(skillsLayout.pageScrollWidth) >
+            Number(skillsLayout.pageClientWidth)
     ) {
         throw new Error(
-            `Mobile Harness layout overflow: ${JSON.stringify(mobileHarnessLayout)}`,
+            `Skills layout overflow: ${JSON.stringify(skillsLayout)}`,
         );
     }
-    const mobileHarnessOutput = path.join(
+    const skillsOutput = path.join(
         process.env.RB_VISUAL_DIR || os.tmpdir(),
-        "researchbrain-harness-mobile.png",
+        "researchbrain-skills.png",
     );
-    await page.screenshot({ path: mobileHarnessOutput, fullPage: true });
+    await page.screenshot({ path: skillsOutput, fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTitle("打开菜单").click();
+    await page.getByRole("button", { name: "Skills", exact: true }).click();
+    await page.waitForTimeout(300);
+    const mobileSkillsLayout = await page.evaluate(() => ({
+        viewportWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        pageScrollWidth: document.querySelector(".skills-page")?.scrollWidth,
+        pageClientWidth: document.querySelector(".skills-page")?.clientWidth,
+    }));
+    if (
+        mobileSkillsLayout.scrollWidth > mobileSkillsLayout.viewportWidth ||
+        Number(mobileSkillsLayout.pageScrollWidth) >
+            Number(mobileSkillsLayout.pageClientWidth)
+    ) {
+        throw new Error(
+            `Mobile Skills layout overflow: ${JSON.stringify(mobileSkillsLayout)}`,
+        );
+    }
+    const mobileSkillsOutput = path.join(
+        process.env.RB_VISUAL_DIR || os.tmpdir(),
+        "researchbrain-skills-mobile.png",
+    );
+    await page.screenshot({ path: mobileSkillsOutput, fullPage: true });
     if (browserErrors.length) throw new Error(browserErrors.join(" | "));
     console.log(
         JSON.stringify({
             output,
             harnessOutput,
-            mobileHarnessOutput,
+            skillsOutput,
+            mobileSkillsOutput,
             layout,
             harnessLayout,
-            mobileHarnessLayout,
+            skillsLayout,
+            mobileSkillsLayout,
         }),
     );
     await browser.close();

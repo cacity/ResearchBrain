@@ -21,7 +21,7 @@ CSL-JSON、BibTeX、RIS、DOI 清单或 Markdown，也可通过 MCP 交给 Codex
 MiniMax、DeepSeek 时才会发送相应请求。应用可在 Windows 11 上独立运行，不依赖 WSL、gbrain、
 Docker 或 PostgreSQL。
 
-> 当前为 `0.1.9 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
+> 当前为 `0.2.0 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
 
 ![ResearchBrain 桌面界面](docs/images/researchbrain-library.png)
 
@@ -43,6 +43,8 @@ Docker 或 PostgreSQL。
 - **Agent 接入**：FastAPI、CLI、桌面应用和 stdio MCP 共用同一 SQLite 与 LanceDB 数据。
 - **Harness 深度调研（实验分支）**：可启动隔离的 DeepSeek Harness Web Profile，通过 MCP 调用
   ResearchBrain 的本地检索、联网发现、DOI 导入、开放全文和任务状态工具，并按科研 Skill 执行多步调研。
+- **Skills 管理**：从本地目录、ZIP 或 GitHub 安装第三方 `SKILL.md`，校验名称、依赖、脚本和文件
+  安全性，支持启用、停用、更新、卸载，并把已启用 Skill 部署到 Harness 隔离工作区。
 
 ## 设计边界
 
@@ -132,6 +134,7 @@ ResearchBrain/
   library/objects/           # SHA-256 内容寻址 PDF
   artifacts/                 # Markdown、JSON 和图表产物
   runtime/                   # 可回滚外部组件
+  skills/                    # Skill 注册表及按哈希保存的受管副本
 ```
 
 ## Codex 与 MCP
@@ -231,6 +234,23 @@ Skill。示例：
 Harness 使用 `%LOCALAPPDATA%\ResearchBrain\harness` 下的隔离工作区和配置目录，不直接获得数据库、
 PDF 对象目录或 Zotero 目录的文件权限。文献导入和全文获取只能通过有副作用标记的 MCP 工具排队，
 解析和向量化是否完成以任务状态为准。
+
+### 在 ResearchBrain 中使用第三方 Skills
+
+“Skills”页面支持三种安装来源：本地 Skill 目录、本地 ZIP，以及 `https://github.com/...` 仓库。
+仓库包含多个 Skill 时需填写具体子目录；也可以固定分支、标签或提交。第三方 Skill 默认不启用，
+安装页会列出其 MCP 依赖、本地脚本权限和兼容状态。启用、更新或卸载后，重启 Harness 才会加载
+新的受管副本。
+
+随应用内置 `researchbrain-zotero-sync`、`researchbrain-doi-fulltext`、`researchbrain-pdf-ingest`、
+`researchbrain-vector-index`、`researchbrain-evidence-research` 和通用 `researchbrain-literature`，安装
+ResearchBrain 后即可在 Harness 中调用，不需要再从 Codex 目录复制。
+
+ResearchBrain 在安装阶段只读取和复制文件，不执行第三方代码。ZIP 路径穿越、符号链接、异常
+`SKILL.md` frontmatter、内置名称冲突、过大的文件集会被拒绝；包含脚本的 Skill 标记为“需审查
+脚本”，声明额外 MCP 的 Skill 标记为“需配置依赖”。点击某个已启用 Skill 的播放按钮，会用当前
+文库启动 Harness 并复制显式 `$skill-name` 调用提示词。Skill 的实际能力仍取决于 Harness 已配置的
+工具和用户授予的权限。
 
 详细安装、数据边界、调试和回退方式见 [DeepSeek Harness 集成说明](docs/deepseek-harness.md)。
 

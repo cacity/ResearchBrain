@@ -44,7 +44,7 @@ Runtime data is isolated under:
 %LOCALAPPDATA%/ResearchBrain/harness/
   dsh-home/                         Harness profile, settings, and sessions
   researchbrain-harness-bridge/     generated MCP bundle
-  workspace/.agents/skills/         ResearchBrain literature Skill
+  workspace/.agents/skills/         Built-in and enabled managed Skills
   harness.log                       startup and runtime log
 ```
 
@@ -127,3 +127,15 @@ The upstream references are the
 [DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness),
 [MCP client documentation](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/mcp/mcp-client),
 and [filesystem Skill documentation](https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/skill/skill-filesystem).
+
+## Managed third-party Skills
+
+The desktop Skills registry is stored separately from the Harness workspace. Installations from local folders,
+ZIP archives, and GitHub are validated and copied into content-hashed managed storage. Harness receives only
+enabled Skills at start time. Changes made while an owned Harness process is running are applied by restarting
+that process; an externally started Harness must be stopped by its owner first.
+
+ResearchBrain does not execute Skill scripts during installation, update, inspection, or deployment. Scripted
+Skills are visibly marked for review, extra MCP dependencies must be configured separately, and unknown
+dependency types are not deployable. Provider credentials remain in the existing secret store and are never
+written into Skill packages or the registry.

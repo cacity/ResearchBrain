@@ -1,4 +1,6 @@
 import {
+  Archive,
+  Blocks,
   BookOpen,
   Bot,
   BrainCircuit,
@@ -10,7 +12,9 @@ import {
   ExternalLink,
   FileSearch,
   FileText,
+  FolderOpen,
   FolderSync,
+  Github,
   Import,
   KeyRound,
   LibraryBig,
@@ -28,6 +32,7 @@ import {
   Settings,
   SlidersHorizontal,
   SquareTerminal,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
@@ -45,6 +50,7 @@ import {
   Job,
   Library,
   HarnessStatus,
+  SkillRecord,
   ZoteroProbeStatus,
   ZoteroSyncStatus,
 } from "./api";
@@ -53,6 +59,7 @@ type View =
   | "library"
   | "chat"
   | "harness"
+  | "skills"
   | "import"
   | "discover"
   | "jobs"
@@ -62,6 +69,7 @@ const NAVIGATION: { id: View; label: string; icon: typeof LibraryBig }[] = [
   { id: "library", label: "文献库", icon: LibraryBig },
   { id: "chat", label: "证据对话", icon: MessageSquareText },
   { id: "harness", label: "深度调研", icon: BrainCircuit },
+  { id: "skills", label: "Skills", icon: Blocks },
   { id: "import", label: "批量导入", icon: Import },
   { id: "discover", label: "在线发现", icon: FileSearch },
   { id: "jobs", label: "任务中心", icon: SlidersHorizontal },
@@ -222,7 +230,7 @@ function App() {
         <div
           className={`content-area ${view === "chat" ? "chat-content-area" : ""}`}
         >
-          {!activeLibrary && view !== "settings" ? (
+          {!activeLibrary && view !== "settings" && view !== "skills" ? (
             <FirstLibrary
               onCreated={(library) => {
                 setLibraries([library]);
@@ -248,6 +256,7 @@ function App() {
               {view === "harness" && activeLibrary && (
                 <HarnessView library={activeLibrary} />
               )}
+              {view === "skills" && <SkillsView library={activeLibrary} />}
               {view === "import" && activeLibrary && (
                 <ImportView library={activeLibrary} onQueued={refresh} />
               )}
@@ -1610,7 +1619,15 @@ function HarnessView({ library }: { library: Library }) {
         </div>
         <div>
           <span>科研 Skill</span>
-          <Status value={status?.configured ? "configured" : "not installed"} />
+          <Status
+            value={
+              status?.skills
+                ? `${status.skills.enabled} enabled${status.skills.restart_required ? " · restart" : ""}`
+                : status?.configured
+                  ? "configured"
+                  : "not installed"
+            }
+          />
         </div>
         <div>
           <span>Node.js</span>
@@ -1646,6 +1663,384 @@ function HarnessView({ library }: { library: Library }) {
       </div>
     </section>
   );
+}
+
+function SkillsView({ library }: { library: Library | null }) {
+  const [skills, setSkills] = useState<SkillRecord[]>([]);
+  const [harness, setHarness] = useState<HarnessStatus | null>(null);
+  const [sourceKind, setSourceKind] = useState<"local" | "archive" | "github">(
+    "local",
+  );
+  const [source, setSource] = useState("");
+  const [ref, setRef] = useState("");
+  const [subpath, setSubpath] = useState("");
+  const [enableAfterInstall, setEnableAfterInstall] = useState(false);
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<
+    "all" | "enabled" | "disabled" | "issues"
+  >("all");
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [launchUrl, setLaunchUrl] = useState("");
+
+  const refreshSkills = useCallback(async () => {
+    try {
+      const [skillValues, harnessValue] = await Promise.all([
+        api.skills(),
+        api.harnessStatus(),
+      ]);
+      setSkills(skillValues);
+      setHarness(harnessValue);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSkills();
+  }, [refreshSkills]);
+
+  const visibleSkills = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return skills.filter((skill) => {
+      if (
+        normalized &&
+        !`${skill.name} ${skill.description}`.toLowerCase().includes(normalized)
+      )
+        return false;
+      if (filter === "enabled") return skill.enabled;
+      if (filter === "disabled") return !skill.enabled;
+      if (filter === "issues") return skill.compatibility !== "compatible";
+      return true;
+    });
+  }, [filter, query, skills]);
+
+  const install = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy("install");
+    setError("");
+    setNotice("");
+    try {
+      const installed = await api.installSkill({
+        source_kind: sourceKind,
+        source: source.trim(),
+        ref: ref.trim(),
+        subpath: subpath.trim(),
+        enabled: enableAfterInstall,
+      });
+      setSource("");
+      setNotice(`${installed.name} 已安装${installed.enabled ? "并启用" : ""}`);
+      await refreshSkills();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const changeEnabled = async (skill: SkillRecord) => {
+    setBusy(`enable:${skill.name}`);
+    setError("");
+    try {
+      await api.enableSkill(skill.name, !skill.enabled);
+      setNotice("启用状态已保存；正在运行的 Harness 需重启后生效");
+      await refreshSkills();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const update = async (skill: SkillRecord) => {
+    setBusy(`update:${skill.name}`);
+    setError("");
+    try {
+      await api.updateSkill(skill.name);
+      setNotice(`${skill.name} 已更新；重启 Harness 后生效`);
+      await refreshSkills();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const remove = async (skill: SkillRecord) => {
+    if (!window.confirm(`卸载 ${skill.name}？`)) return;
+    setBusy(`remove:${skill.name}`);
+    setError("");
+    try {
+      await api.uninstallSkill(skill.name);
+      setNotice(`${skill.name} 已卸载；重启 Harness 后生效`);
+      await refreshSkills();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const launch = async (skill: SkillRecord) => {
+    if (!library) {
+      setError("请先创建或选择一个文库");
+      return;
+    }
+    setBusy(`launch:${skill.name}`);
+    setError("");
+    setLaunchUrl("");
+    try {
+      const result = await api.launchSkill(
+        skill.name,
+        library.id,
+        harness?.port ?? 3080,
+      );
+      await navigator.clipboard.writeText(result.prompt).catch(() => undefined);
+      setHarness(result.harness);
+      setLaunchUrl(result.harness.url);
+      setNotice(`已启动 ${skill.name}，调用提示词已复制`);
+      window.open(result.harness.url, "_blank", "noopener,noreferrer");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <section className="skills-page">
+      <form className="skill-installer" onSubmit={install}>
+        <div className="skill-source-tabs" aria-label="Skill 来源">
+          {(
+            [
+              ["local", "本地目录", FolderOpen],
+              ["archive", "ZIP", Archive],
+              ["github", "GitHub", Github],
+            ] as const
+          ).map(([value, label, Icon]) => (
+            <button
+              type="button"
+              key={value}
+              className={sourceKind === value ? "active" : ""}
+              onClick={() => setSourceKind(value)}
+            >
+              <Icon size={15} />
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="skill-install-row">
+          <input
+            value={source}
+            onChange={(event) => setSource(event.target.value)}
+            placeholder={
+              sourceKind === "github"
+                ? "https://github.com/owner/repository"
+                : sourceKind === "archive"
+                  ? "C:\\path\\skill.zip"
+                  : "C:\\path\\skill-folder"
+            }
+            aria-label="Skill 来源"
+          />
+          {sourceKind === "github" && (
+            <input
+              className="skill-ref-input"
+              value={ref}
+              onChange={(event) => setRef(event.target.value)}
+              placeholder="分支或标签"
+              aria-label="Git 引用"
+            />
+          )}
+          <input
+            className="skill-subpath-input"
+            value={subpath}
+            onChange={(event) => setSubpath(event.target.value)}
+            placeholder="子目录（可选）"
+            aria-label="Skill 子目录"
+          />
+          <button
+            className="primary-button"
+            disabled={!source.trim() || Boolean(busy)}
+          >
+            {busy === "install" ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : (
+              <Download size={16} />
+            )}
+            安装
+          </button>
+        </div>
+        <label className="skill-install-toggle">
+          <input
+            type="checkbox"
+            checked={enableAfterInstall}
+            onChange={(event) => setEnableAfterInstall(event.target.checked)}
+          />
+          安装后启用
+        </label>
+      </form>
+
+      {(error || notice) && (
+        <div
+          className={error ? "skill-message error" : "skill-message success"}
+        >
+          {error ? <CircleAlert size={16} /> : <Check size={16} />}
+          <span>{error || notice}</span>
+          {launchUrl && (
+            <a href={launchUrl} target="_blank" rel="noreferrer">
+              打开 Harness
+            </a>
+          )}
+        </div>
+      )}
+
+      <div className="skills-controls">
+        <div className="library-search skill-search">
+          <Search size={16} />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="筛选名称或说明"
+          />
+        </div>
+        <div className="skill-filter-tabs">
+          {(
+            [
+              ["all", "全部"],
+              ["enabled", "已启用"],
+              ["disabled", "已停用"],
+              ["issues", "需处理"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              className={filter === value ? "active" : ""}
+              onClick={() => setFilter(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          className="icon-button"
+          onClick={() => void refreshSkills()}
+          title="刷新 Skills"
+        >
+          <RefreshCw size={17} />
+        </button>
+      </div>
+
+      <div className="skill-list">
+        {visibleSkills.map((skill) => (
+          <article className="skill-row" key={skill.name}>
+            <div className="skill-identity">
+              <div className="skill-title-line">
+                <strong>{skill.name}</strong>
+                {skill.builtin && (
+                  <span className="skill-badge builtin">内置</span>
+                )}
+                <span className={`skill-badge ${skill.compatibility}`}>
+                  {skillCompatibilityText(skill.compatibility)}
+                </span>
+              </div>
+              <p>{skill.description}</p>
+              <div className="skill-meta">
+                <span>{skill.source_kind}</span>
+                <span>{skill.file_count} files</span>
+                {skill.dependencies.map((dependency) => (
+                  <span key={`${dependency.type}:${dependency.value}`}>
+                    {dependency.type}: {dependency.value || "未声明"}
+                  </span>
+                ))}
+                {skill.permissions.map((permission) => (
+                  <span className="permission" key={permission}>
+                    {permission}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="skill-actions">
+              <label
+                className="skill-switch"
+                title={skill.enabled ? "停用" : "启用"}
+              >
+                <input
+                  type="checkbox"
+                  checked={skill.enabled}
+                  disabled={skill.builtin || busy === `enable:${skill.name}`}
+                  onChange={() => void changeEnabled(skill)}
+                />
+                <span />
+              </label>
+              <button
+                className="icon-button"
+                title="使用 Skill"
+                disabled={!skill.enabled || Boolean(busy)}
+                onClick={() => void launch(skill)}
+              >
+                {busy === `launch:${skill.name}` ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <Play size={16} />
+                )}
+              </button>
+              {!skill.builtin && (
+                <button
+                  className="icon-button"
+                  title="更新"
+                  disabled={Boolean(busy)}
+                  onClick={() => void update(skill)}
+                >
+                  <RefreshCw size={16} />
+                </button>
+              )}
+              {!skill.builtin && (
+                <button
+                  className="icon-button"
+                  title="打开受管目录"
+                  onClick={() =>
+                    void api
+                      .revealSkill(skill.name)
+                      .catch((reason) =>
+                        setError(
+                          reason instanceof Error
+                            ? reason.message
+                            : String(reason),
+                        ),
+                      )
+                  }
+                >
+                  <FolderOpen size={16} />
+                </button>
+              )}
+              {!skill.builtin && (
+                <button
+                  className="icon-button danger-button"
+                  title="卸载"
+                  disabled={Boolean(busy)}
+                  onClick={() => void remove(skill)}
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+        {!visibleSkills.length && (
+          <div className="skill-empty">没有匹配的 Skill</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function skillCompatibilityText(value: SkillRecord["compatibility"]) {
+  if (value === "compatible") return "兼容";
+  if (value === "review_required") return "需审查脚本";
+  if (value === "needs_configuration") return "需配置依赖";
+  return "不兼容";
 }
 
 function SettingsView({

@@ -10,6 +10,7 @@ datas = [
         "researchbrain/migrations",
     ),
     (str(ROOT / "versions.lock"), "."),
+    (str(ROOT / ".agents" / "skills"), "researchbrain/builtin_skills"),
 ]
 binaries = []
 hiddenimports = collect_submodules("researchbrain")

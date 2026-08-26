@@ -119,6 +119,7 @@ class Settings:
             "backups",
             "logs",
             "runtime",
+            "skills",
         ):
             (self.data_dir / relative).mkdir(parents=True, exist_ok=True)
 
