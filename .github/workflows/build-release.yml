@@ -39,7 +39,7 @@ jobs:
             "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
           }
           $lines | Set-Content -Encoding ascii desktop\src-tauri\target\release\bundle\SHA256SUMS.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: researchbrain-windows-unsigned
           path: |
