@@ -140,6 +140,13 @@
     "checks": ["citation_id_valid"]
   },
   {
+    "id": "cross-topic-spherical-harmonic-multibeam",
+    "mode": "local",
+    "question": "调研球谐分析的方法、数据流程、缺陷及内外源分离方法。",
+    "checks": ["topic_relevance", "citation_support"],
+    "must_not_contain": ["多波束", "multibeam", "XTF", "HSX"]
+  },
+  {
     "id": "long-session",
     "mode": "local",
     "question": "在长会话中总结前述结论，但不得把历史模型回答当作新证据。",

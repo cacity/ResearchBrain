@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -53,6 +54,18 @@ class DeepSeekGateway:
         signal: CancellationSignal,
     ) -> SchemaT:
         signal.raise_if_cancelled()
+        schema_json = json.dumps(
+            schema.model_json_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        structured_system = (
+            f"{system}\n\n"
+            "Your entire response must be one JSON object that validates against this exact JSON Schema. "
+            "Use the exact property names, enum values, array shapes, and ID formats. "
+            "Do not add commentary.\n"
+            f"JSON Schema:\n{schema_json}"
+        )
         validation_error = ""
         for attempt in range(2):
             prompt = user
@@ -61,7 +74,7 @@ class DeepSeekGateway:
                     f"{user}\n\nYour previous JSON failed schema validation. Correct it without commentary.\n"
                     f"Validation error: {validation_error}"
                 )
-            payload = await self._generate_with_retry(system, prompt, signal)
+            payload = await self._generate_with_retry(structured_system, prompt, signal)
             signal.raise_if_cancelled()
             try:
                 return schema.model_validate(payload)

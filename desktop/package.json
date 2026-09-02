@@ -1,7 +1,7 @@
 {
   "name": "researchbrain-desktop",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "AGPL-3.0-only",
   "description": "Local-first literature library and evidence-grounded research desktop app",
   "type": "module",

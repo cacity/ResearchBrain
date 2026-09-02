@@ -6,7 +6,7 @@ import pytest
 from researchbrain.agent.deepseek import GenerationError
 from researchbrain.orchestration.evidence import EvidenceLedger
 from researchbrain.orchestration.models import ResearchBudgets
-from researchbrain.orchestration.orchestrator import ResearchOrchestrator
+from researchbrain.orchestration.orchestrator import ResearchOrchestrator, _fallback_plan
 from researchbrain.orchestration.state_machine import (
     InvalidResearchTransition,
     ResearchStateMachine,
@@ -14,13 +14,20 @@ from researchbrain.orchestration.state_machine import (
 from researchbrain.retrieval.index import SearchHit
 
 
-def hit(chunk: str, item: str = "item-1", score: float = 0.9, page: int | None = 3) -> SearchHit:
+def hit(
+    chunk: str,
+    item: str = "item-1",
+    score: float = 0.9,
+    page: int | None = 3,
+    title: str | None = None,
+    text: str | None = None,
+) -> SearchHit:
     return SearchHit(
         chunk_id=chunk,
         item_id=item,
         artifact_id="artifact-1",
-        title=f"Paper {item}",
-        text=f"Evidence from {chunk}",
+        title=title or f"Paper {item}",
+        text=text or f"Evidence from {chunk} reports a storm response.",
         section="Results",
         page_start=page,
         page_end=page,
@@ -64,6 +71,8 @@ class FixtureGateway:
                     }
                 ],
                 "queries": ["storm response observations"],
+                "topic_terms": ["storm response"],
+                "excluded_terms": [],
                 "completion_criteria": ["Q1 is supported by full text"],
             }
         elif role == "assessor":
@@ -85,6 +94,19 @@ class FixtureGateway:
                 "next_action": "local_search" if partial else "synthesize",
                 "additional_queries": ["independent storm observation"] if partial else [],
                 "rationale": "A second source is needed" if partial else "Evidence is sufficient",
+            }
+        elif role == "relevance":
+            request = json.loads(user)
+            payload = {
+                "judgments": [
+                    {
+                        "evidence_id": evidence["id"],
+                        "relevance": "relevant",
+                        "subquestion_ids": ["Q1"],
+                        "reason": "The evidence directly addresses the planned response question.",
+                    }
+                    for evidence in request["evidence"]
+                ]
             }
         elif role == "synthesizer":
             citation = "E99" if self.invalid_citation else "E1"
@@ -114,6 +136,108 @@ class FixtureGateway:
         return schema.model_validate(payload)
 
 
+class CrossTopicGateway(FixtureGateway):
+    async def generate_structured(self, role, _system, user, schema, signal):
+        signal.raise_if_cancelled()
+        self.roles.append(role)
+        if role == "planner":
+            payload = {
+                "intent": "Review spherical harmonic analysis methods",
+                "subquestions": [
+                    {
+                        "id": "Q1",
+                        "question": "Which spherical harmonic analysis methods are used?",
+                        "required_level": "fulltext_section",
+                    }
+                ],
+                "queries": ["spherical harmonic analysis methods"],
+                "topic_terms": ["球谐", "spherical harmonic"],
+                "excluded_terms": ["多波束", "multibeam sonar"],
+                "completion_criteria": ["Use same-topic evidence only"],
+            }
+        elif role == "relevance":
+            request = json.loads(user)
+            payload = {
+                "judgments": [
+                    {
+                        "evidence_id": evidence["id"],
+                        "relevance": "relevant",
+                        "subquestion_ids": ["Q1"],
+                        "reason": "The permissive model classified every retrieved result as relevant.",
+                    }
+                    for evidence in request["evidence"]
+                ]
+            }
+        elif role == "assessor":
+            evidence = json.loads(user)["evidence"]
+            payload = {
+                "coverage": [
+                    {
+                        "subquestion_id": "Q1",
+                        "question": "Which spherical harmonic analysis methods are used?",
+                        "status": "covered",
+                        "required_level": "fulltext_section",
+                        "evidence_ids": [evidence[0]["id"]],
+                    }
+                ],
+                "next_action": "synthesize",
+                "rationale": "A directly relevant source is available.",
+            }
+        elif role == "synthesizer":
+            payload = {
+                "answer": "The relevant paper compares spherical harmonic methods [E2].",
+                "citation_ids": ["E2"],
+                "limitations": [],
+            }
+        elif role == "reviewer":
+            payload = {
+                "blocking": [],
+                "warnings": [],
+                "missing_subquestions": [],
+                "valid_citation_ids": ["E2"],
+            }
+        else:
+            raise AssertionError(f"unexpected role: {role}")
+        return schema.model_validate(payload)
+
+
+class IrrelevantOnlyGateway(FixtureGateway):
+    async def generate_structured(self, role, _system, user, schema, signal):
+        if role != "relevance":
+            return await super().generate_structured(role, _system, user, schema, signal)
+        request = json.loads(user)
+        return schema.model_validate(
+            {
+                "judgments": [
+                    {
+                        "evidence_id": evidence["id"],
+                        "relevance": "irrelevant",
+                        "subquestion_ids": [],
+                        "reason": "Different scientific topic.",
+                    }
+                    for evidence in request["evidence"]
+                ]
+            }
+        )
+
+
+class CrossTopicDraftGateway(CrossTopicGateway):
+    async def generate_structured(self, role, _system, user, schema, signal):
+        if role != "synthesizer":
+            return await super().generate_structured(role, _system, user, schema, signal)
+        self.roles.append(role)
+        return schema.model_validate(
+            {
+                "answer": (
+                    "The paper compares spherical harmonic methods [E2].\n\n"
+                    "- Multibeam sonar requires XTF decoding [E2]."
+                ),
+                "citation_ids": ["E2"],
+                "limitations": [],
+            }
+        )
+
+
 def test_research_state_machine_rejects_invalid_transition():
     machine = ResearchStateMachine()
     machine.transition("intake")
@@ -121,6 +245,20 @@ def test_research_state_machine_rejects_invalid_transition():
 
     with pytest.raises(InvalidResearchTransition, match="planning -> synthesis"):
         machine.transition("synthesis")
+
+
+def test_fallback_plan_splits_a_broad_question_instead_of_reusing_the_full_prompt():
+    question = (
+        "帮我调研一下，球谐分析最近几年有哪些工作，他们的数据处理过程有哪些，"
+        "各种方法有哪些缺陷，还有哪些内外源分离方法，形成一个调研报告"
+    )
+
+    plan = _fallback_plan(question, max_subquestions=6, max_queries=6)
+
+    assert len(plan.subquestions) >= 4
+    assert all(value.id.startswith("Q") for value in plan.subquestions)
+    assert all("球谐分析" in value for value in plan.queries)
+    assert question not in plan.queries
 
 
 def test_evidence_ledger_limits_repeated_chunks_per_item():
@@ -142,6 +280,80 @@ def test_evidence_ledger_limits_repeated_chunks_per_item():
     assert {value.evidence.item_id for value in entries} == {"item-1", "item-2"}
     assert "c4" not in {value.evidence.chunk_id for value in entries}
     assert all(value.level == "fulltext_page" for value in entries)
+
+
+@pytest.mark.asyncio
+async def test_topic_gate_excludes_multibeam_from_spherical_harmonic_answer():
+    retrieval = FixtureRetrieval(
+        [
+            [
+                hit(
+                    "multibeam",
+                    item="sonar",
+                    score=0.99,
+                    title="Multibeam sonar data preprocessing",
+                    text="Ray correction, vessel attitude correction, and XTF decoding.",
+                ),
+                hit(
+                    "spherical",
+                    item="sha",
+                    score=0.8,
+                    title="Spherical harmonic analysis algorithms",
+                    text="Comparison of FFT, least squares, and weighted least squares methods.",
+                ),
+            ]
+        ]
+    )
+    events: list[tuple[str, dict]] = []
+
+    async def sink(event_type, payload):
+        events.append((event_type, payload))
+
+    result = await ResearchOrchestrator(
+        retrieval,
+        CrossTopicGateway(),
+        budgets=ResearchBudgets(parallel_scouts=False),
+        event_sink=sink,
+    ).run("library", "Review spherical harmonic analysis methods", mode="local")
+
+    assert result.citation_ids == ["E2"]
+    assert [value.title for value in result.evidence] == ["Spherical harmonic analysis algorithms"]
+    excluded = next(value for value in result.all_evidence if value.id == "E1")
+    assert excluded.relevance == "irrelevant"
+    screening = next(payload for kind, payload in events if kind == "evidence_screened")
+    assert screening["counts"]["irrelevant"] == 1
+
+
+@pytest.mark.asyncio
+async def test_topic_contract_removes_cross_topic_content_reintroduced_by_generator():
+    result = await ResearchOrchestrator(
+        FixtureRetrieval(
+            [
+                [
+                    hit(
+                        "multibeam",
+                        item="sonar",
+                        score=0.99,
+                        title="Multibeam sonar data preprocessing",
+                        text="Ray correction, vessel attitude correction, and XTF decoding.",
+                    ),
+                    hit(
+                        "spherical",
+                        item="sha",
+                        score=0.8,
+                        title="Spherical harmonic analysis algorithms",
+                        text="Comparison of spherical harmonic least-squares methods.",
+                    ),
+                ]
+            ]
+        ),
+        CrossTopicDraftGateway(),
+        budgets=ResearchBudgets(parallel_scouts=False),
+    ).run("library", "Review spherical harmonic analysis methods", mode="local")
+
+    assert "spherical harmonic" in result.answer
+    assert "Multibeam" not in result.answer
+    assert any("multibeam sonar" in value.lower() for value in result.limitations)
 
 
 @pytest.mark.asyncio
@@ -192,6 +404,31 @@ async def test_orchestrator_reports_no_evidence_instead_of_generating():
         await orchestrator.run("library", "Unknown topic", mode="local")
 
     assert caught.value.code == "no_evidence"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_abstains_when_all_candidates_are_cross_topic():
+    orchestrator = ResearchOrchestrator(
+        FixtureRetrieval(
+            [
+                [
+                    hit(
+                        "multibeam",
+                        title="Multibeam sonar data preprocessing",
+                        text="XTF decoding and vessel attitude correction.",
+                    )
+                ]
+            ]
+        ),
+        IrrelevantOnlyGateway(),
+        budgets=ResearchBudgets(max_local_rounds=1, parallel_scouts=False),
+    )
+
+    with pytest.raises(GenerationError) as caught:
+        await orchestrator.run("library", "Spherical harmonic analysis", mode="local")
+
+    assert caught.value.code == "no_relevant_evidence"
+    assert "synthesizer" not in orchestrator.gateway.roles
 
 
 @pytest.mark.asyncio

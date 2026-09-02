@@ -174,12 +174,37 @@ export type ResearchEvent = {
   levels?: Record<string, number>;
   counts?: Record<string, number>;
   coverage?: Array<Record<string, unknown>>;
+  subquestions?: Array<{
+    id: string;
+    question: string;
+    required_level: string;
+  }>;
+  queries?: string[];
+  topic_terms?: string[];
+  excluded_terms?: string[];
+  judgments?: Array<{
+    evidence_id: string;
+    relevance: "relevant" | "adjacent" | "irrelevant";
+    reason: string;
+  }>;
+  blocking?: number;
+  warnings?: number;
+  issues?: Array<{
+    type: string;
+    claim: string;
+    citation_ids: string[];
+    reason: string;
+  }>;
   message_id?: string;
   message?: string;
   code?: string;
   approval?: ResearchApproval;
   metrics?: Record<string, unknown>;
   limitations?: string[];
+  call_id?: string;
+  tool?: string;
+  status?: "completed" | "failed";
+  error?: string;
 };
 
 export type Evidence = {
@@ -196,6 +221,8 @@ export type Evidence = {
   source_name: string;
   source_url: string;
   discovery_record: DiscoveryRecord | null;
+  relevance?: "relevant" | "adjacent" | "irrelevant" | "unreviewed";
+  relevance_reason?: string;
 };
 
 export type AttachmentSummary = {

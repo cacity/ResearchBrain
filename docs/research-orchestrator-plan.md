@@ -462,7 +462,8 @@ Reviewer 输出结构化问题列表，而不是重新自由写一篇答案：
 交付：复杂综述的覆盖率提升；若 A/B 测试收益不明显，保持关闭。
 
 Phase 0-4 已在 `feature/pi-research-orchestrator` 实现。Phase 5 通过
-`RESEARCHBRAIN_PARALLEL_SCOUTS=1` 启用，仍需使用固定质量集独立评估收益，不作为默认能力。
+`RESEARCHBRAIN_PARALLEL_SCOUTS=1` 启用并作为当前默认值，仍需使用固定质量集独立评估收益；可将
+该环境变量设为 `0` 回退。Pi 模式的准确采用范围见 [Pi 模式采用说明](pi-patterns.md)。
 
 ## 18. 建议目录和代码落点
 
@@ -473,9 +474,9 @@ src/researchbrain/
     state_machine.py    # 合法转换和预算
     orchestrator.py     # 主循环
     evidence.py         # EvidenceLedger 和等级规则
-    context.py          # 会话记忆与压缩
+    context.py          # 会话记忆裁剪与证据权重隔离
     events.py           # 事件类型与事件存储
-    tools.py            # 受控工具适配层
+    tools.py            # 受控工具注册、校验、预算和生命周期事件
     reviewer.py         # 确定性校验
   agent/
     gateway.py          # ModelGateway

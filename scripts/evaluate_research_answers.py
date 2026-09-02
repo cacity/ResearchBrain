@@ -43,6 +43,7 @@ def run_v2(client: httpx.Client, library_id: str, case: dict[str, Any]) -> dict[
         str(assistant.get("content") or ""),
         list(assistant.get("citations") or []),
         list(run.get("coverage") or []),
+        list(case.get("must_not_contain") or []),
     )
     return {
         "case": case,
@@ -85,6 +86,7 @@ def run_v1(client: httpx.Client, library_id: str, case: dict[str, Any]) -> dict[
             str(assistant.get("content") or ""),
             list(assistant.get("citations") or []),
             [],
+            list(case.get("must_not_contain") or []),
         ),
     }
 

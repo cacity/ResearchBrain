@@ -11,6 +11,7 @@ EvidenceLevel = Literal[
     "metadata",
 ]
 CoverageStatus = Literal["covered", "partial", "insufficient_evidence"]
+EvidenceRelevance = Literal["relevant", "adjacent", "irrelevant"]
 
 
 class ResearchBudgets(BaseModel):
@@ -20,6 +21,7 @@ class ResearchBudgets(BaseModel):
     per_query_limit: int = Field(default=12, ge=5, le=30)
     evidence_limit: int = Field(default=20, ge=5, le=60)
     max_model_steps: int = Field(default=12, ge=3, le=12)
+    max_tool_calls: int = Field(default=30, ge=5, le=60)
     max_revision_rounds: int = Field(default=1, ge=0, le=2)
     soft_timeout_seconds: int = Field(default=180, ge=30, le=600)
     acquisition_wait_seconds: int = Field(default=30, ge=0, le=120)
@@ -36,6 +38,8 @@ class ResearchPlan(BaseModel):
     intent: str = Field(min_length=1, max_length=1000)
     subquestions: list[ResearchSubquestion] = Field(min_length=1, max_length=10)
     queries: list[str] = Field(min_length=1, max_length=12)
+    topic_terms: list[str] = Field(default_factory=list, max_length=20)
+    excluded_terms: list[str] = Field(default_factory=list, max_length=20)
     completion_criteria: list[str] = Field(default_factory=list, max_length=10)
 
 
@@ -54,6 +58,17 @@ class GapAssessment(BaseModel):
     next_action: Literal["local_search", "online_search", "synthesize"]
     additional_queries: list[str] = Field(default_factory=list, max_length=6)
     rationale: str = ""
+
+
+class EvidenceRelevanceJudgment(BaseModel):
+    evidence_id: str = Field(pattern=r"^[ELW]\d+$")
+    relevance: EvidenceRelevance
+    subquestion_ids: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class EvidenceScreeningResult(BaseModel):
+    judgments: list[EvidenceRelevanceJudgment]
 
 
 class ScoutFinding(BaseModel):

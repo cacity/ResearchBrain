@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.3.0 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.3.1 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 
@@ -91,15 +91,17 @@ The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
 
 Evidence Chat uses persisted research runs by default: `planning → local_search → gap_assessment →
 online_search → synthesis → verification`. Complex questions can use up to three local retrieval rounds and
-one revision. Optional read-only scouts split subquestions in parallel and remain disabled by default until
-their quality and cost benefit is measured.
+one revision. Read-only scouts split subquestions in parallel and are enabled by default with a configuration
+switch for controlled comparisons. Read-only search tools run through a validated registry with a
+call budget, lifecycle events, parallel execution, and normalized errors. A topic contract blocks cross-domain
+material at evidence admission, citation review, and final-answer output.
 
 ```powershell
 $env:RESEARCHBRAIN_RESEARCH_LOOP_V2 = "1"  # enabled by default
-$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # optional experiment
+$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # enabled by default; use 0 to disable
 ```
 
-The repository includes a fixed 24-case regression set. Start the local API, then run:
+The repository includes a fixed 25-case regression set. Start the local API, then run:
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -112,6 +114,7 @@ python .\scripts\evaluate_research_answers.py `
 The report records citation-ID validity, subquestion coverage, visible empty results, latency, model steps,
 and tool calls. It uses real provider requests and is therefore not part of normal CI. See the
 [research orchestrator plan](docs/research-orchestrator-plan.md) for architecture and implementation status.
+See [Pi pattern adoption](docs/pi-patterns.md) for the explicit adopted, adapted, and excluded scope.
 
 ## Codex Skills
 
