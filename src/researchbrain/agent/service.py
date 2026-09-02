@@ -76,6 +76,10 @@ class AgentAnswer:
     model: str
     search_queries: list[str] | None = None
     provider_statuses: list[ProviderStatus] | None = None
+    plan: dict | None = None
+    coverage: list[dict] | None = None
+    metrics: dict | None = None
+    all_evidence: list[Evidence] | None = None
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from researchbrain.runtime.manager import RuntimeInstallError, RuntimeManager
+from researchbrain.skills import SkillError, SkillRegistry
 
 DSH_PACKAGE = "@deepseek-ai/dsh@0.1.1-rc.2"
 MINIMUM_NODE = (22, 19, 0)
@@ -142,6 +143,7 @@ class HarnessRuntimeManager:
         self.bundle = self.root / "researchbrain-harness-bridge"
         self.log_path = self.root / "harness.log"
         self._runtime = RuntimeManager(self.data_dir)
+        self.skills = SkillRegistry(self.data_dir)
         self._process: subprocess.Popen | None = None
         self._log_handle = None
         self._lock = Lock()
@@ -175,7 +177,25 @@ class HarnessRuntimeManager:
             log_path=str(self.log_path),
             error=error,
         )
-        return asdict(state)
+        payload = asdict(state)
+        marker = self.workspace / ".agents" / "skills" / ".researchbrain-managed.json"
+        deployed: list[str] = []
+        if marker.is_file():
+            try:
+                deployed = [
+                    str(value)
+                    for value in json.loads(marker.read_text(encoding="utf-8")).get("skills", [])
+                    if isinstance(value, str)
+                ]
+            except (OSError, ValueError, TypeError):
+                deployed = []
+        expected = sorted(value["name"] for value in self.skills.list() if value["enabled"])
+        payload["skills"] = {
+            **self.skills.summary(),
+            "deployed": deployed,
+            "restart_required": sorted(deployed) != expected,
+        }
+        return payload
 
     def install(self, default_library_id: str = "") -> dict[str, Any]:
         with self._lock:
@@ -297,9 +317,13 @@ class HarnessRuntimeManager:
         return self.status(self._port)
 
     def _write_integration_files(self) -> None:
-        skill_dir = self.workspace / ".agents" / "skills" / "researchbrain-literature"
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(_SKILL, encoding="utf-8")
+        try:
+            self.skills.materialize(
+                self.workspace / ".agents" / "skills",
+                {"researchbrain-literature": _SKILL},
+            )
+        except SkillError as exc:
+            raise HarnessInstallError(f"Unable to deploy Skills: {exc}") from exc
         self.bundle.mkdir(parents=True, exist_ok=True)
         (self.bundle / "package.json").write_text(
             json.dumps(_BUNDLE_PACKAGE, ensure_ascii=True, indent=2) + "\n",

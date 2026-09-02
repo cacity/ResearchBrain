@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.1.9 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.3.0 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 
@@ -34,15 +34,22 @@ device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreS
 - Parses PDFs with MinerU and falls back to PyMuPDF, preserving page and section provenance.
 - Embeds titles, abstracts, and parsed PDF text with MiniMax, then combines LanceDB full-text, vector,
   and RRF hybrid retrieval. Empty libraries return an explicit readiness response.
-- Supports local-only, local-first plus online, and online-research chat scopes; DeepSeek must cite supplied
-  local or online evidence IDs.
-- Persists every conversation, message, and citation per library. The current question has retrieval weight
-  `1.0`, recent-question context has weight `0.25`, and prior model answers have evidence weight `0`.
+- Runs local-only, local-first plus online, and online research as a staged loop: question decomposition,
+  iterative retrieval, coverage assessment, synthesis, independent review, and bounded revision. DeepSeek may
+  cite only IDs in the current run's evidence ledger.
+- Streams research progress, accepts mid-run constraints, supports cancellation and retry after failure or
+  restart, and persists steps, every inspected candidate, and the final cited evidence.
+- Requests approval before importing DOI-backed online evidence. Approved work enters the existing lawful
+  full-text, parsing, and embedding jobs and is re-retrieved in the same run when it finishes within budget.
+- Persists every conversation, message, and citation per library. Session summaries provide continuity, while
+  prior model answers always have evidence weight `0`.
 - Hands searches off to Google Scholar in the browser instead of relying on unstable page scraping.
 - Exports CSL-JSON, BibTeX, RIS, DOI lists, and Markdown.
 - Exposes the same local corpus through the desktop app, FastAPI, CLI, and stdio MCP.
 - On the experimental `feature/deepseek-harness` branch, launches an isolated DeepSeek Harness Web profile
   that uses ResearchBrain MCP tools and a strict literature-research Skill for multi-step investigations.
+- Installs third-party filesystem Skills from a local folder, ZIP, or GitHub; validates dependencies and
+  file safety; and manages enable, update, uninstall, and isolated Harness deployment.
 
 ## Safety and scope
 
@@ -79,6 +86,32 @@ npm run tauri dev
 
 Configure provider credentials in the desktop settings so they are stored in Windows Credential Manager.
 The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
+
+## Iterative research orchestrator
+
+Evidence Chat uses persisted research runs by default: `planning → local_search → gap_assessment →
+online_search → synthesis → verification`. Complex questions can use up to three local retrieval rounds and
+one revision. Optional read-only scouts split subquestions in parallel and remain disabled by default until
+their quality and cost benefit is measured.
+
+```powershell
+$env:RESEARCHBRAIN_RESEARCH_LOOP_V2 = "1"  # enabled by default
+$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # optional experiment
+```
+
+The repository includes a fixed 24-case regression set. Start the local API, then run:
+
+```powershell
+$env:PYTHONPATH = "src"
+python .\scripts\evaluate_research_answers.py `
+  --library-id <library-id> `
+  --empty-library-id <empty-library-id> `
+  --output .\research-quality-results.json
+```
+
+The report records citation-ID validity, subquestion coverage, visible empty results, latency, model steps,
+and tool calls. It uses real provider requests and is therefore not part of normal CI. See the
+[research orchestrator plan](docs/research-orchestrator-plan.md) for architecture and implementation status.
 
 ## Codex Skills
 
@@ -132,6 +165,20 @@ agent loop. The **Deep Research** view detects Node.js, installs a verified port
 system version is below `22.19`, installs a pinned DSH release, and links the ResearchBrain MCP bundle. Harness
 runs in an isolated workspace and accesses the literature database only through MCP. Write operations such as
 DOI import and lawful open-full-text resolution remain explicit queued tools.
+
+The **Skills** view accepts local Skill directories, local ZIP archives, and `https://github.com/...`
+repositories. A repository containing multiple Skills requires a subpath; a branch, tag, or commit can be
+pinned. Third-party Skills are disabled by default. Their MCP dependencies, local-script permissions, and
+compatibility state are shown before use, and Harness must restart after an enable, update, or uninstall.
+
+ResearchBrain bundles its Zotero sync, DOI/full-text, PDF ingest, vector-index, evidence-research, and general
+literature Skills, so they are available to Harness without copying them from a Codex installation.
+
+Installation reads and copies files but does not execute third-party code. ResearchBrain rejects ZIP path
+traversal, symbolic links, invalid `SKILL.md` frontmatter, built-in name conflicts, and oversized packages.
+Skills containing scripts require review, while Skills declaring additional MCP servers require those services
+to be configured. The play action starts Harness with the current library and copies an explicit
+`$skill-name` prompt; actual capabilities remain bounded by configured Harness tools and user permissions.
 
 See [DeepSeek Harness integration](docs/deepseek-harness.md) for setup, security boundaries, and rollback.
 

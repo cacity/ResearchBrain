@@ -12,6 +12,7 @@ __pycache__/
 .coverage
 coverage.xml
 htmlcov/
+/research-quality-results*.json
 
 # Secrets and machine-specific configuration
 .env

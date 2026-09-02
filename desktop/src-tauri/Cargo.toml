@@ -1,6 +1,6 @@
 [package]
 name = "researchbrain-desktop"
-version = "0.1.9"
+version = "0.3.0"
 description = "ResearchBrain desktop application"
 authors = ["ResearchBrain"]
 license = "AGPL-3.0-only"

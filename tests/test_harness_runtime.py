@@ -42,3 +42,22 @@ def test_manager_writes_isolated_bundle_and_skill(tmp_path):
     assert "@deepseek-ai/dsh-mcp-client" in patch
     assert "RESEARCHBRAIN_DATA_DIR" in patch
     assert not manager.status()["configured"]
+
+
+def test_manager_deploys_enabled_managed_skills(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        "---\nname: managed-skill\ndescription: Managed test Skill.\n---\n",
+        encoding="utf-8",
+    )
+    manager = HarnessRuntimeManager(tmp_path / "data")
+    manager.skills.install("local", str(source), enabled=True)
+
+    manager._write_integration_files()
+
+    assert (manager.workspace / ".agents" / "skills" / "managed-skill" / "SKILL.md").is_file()
+    status = manager.status()
+    assert status["skills"]["enabled"] >= 7
+    assert "researchbrain-zotero-sync" in status["skills"]["deployed"]
+    assert status["skills"]["restart_required"] is False

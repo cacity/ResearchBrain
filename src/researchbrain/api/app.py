@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -10,14 +11,15 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from researchbrain import __version__
 from researchbrain.agent.deepseek import DeepSeekClient, GenerationError
-from researchbrain.agent.service import ConversationTurn, ResearchAgent
+from researchbrain.agent.gateway import CancellationSignal, DeepSeekGateway
+from researchbrain.agent.service import AgentAnswer, ConversationTurn, ResearchAgent
 from researchbrain.citations.export import CitationExporter, CitationExportError
 from researchbrain.config import Settings, UserConfigStore
 from researchbrain.db.base import Database
@@ -34,6 +36,7 @@ from researchbrain.db.models import (
     ItemEmbedding,
     Job,
     Library,
+    ResearchRun,
 )
 from researchbrain.discovery.service import (
     ArxivSearchProvider,
@@ -67,11 +70,14 @@ from researchbrain.jobs.worker import JobWorker
 from researchbrain.library.repository import LibraryRepository
 from researchbrain.lifecycle import exit_when_parent_stops
 from researchbrain.metadata.crossref import CrossrefProvider
+from researchbrain.orchestration import ResearchBudgets, ResearchOrchestrator
+from researchbrain.orchestration.store import TERMINAL_RUN_STATUSES, ResearchRunStore
 from researchbrain.retrieval.index import LanceIndex
 from researchbrain.retrieval.minimax import EmbeddingError, MiniMaxEmbedder
 from researchbrain.retrieval.service import EmbeddingPipeline
 from researchbrain.runtime.manager import RuntimeInstallError, RuntimeManager
 from researchbrain.secrets import SecretStore, SecretStoreError
+from researchbrain.skills import SkillError
 from researchbrain.zotero.attachments import ZoteroAttachmentImporter
 from researchbrain.zotero.client import ZoteroConnectionError, ZoteroLocalClient
 
@@ -92,6 +98,11 @@ class AppState:
         self.mineru_executable = str(saved.get("mineru_executable") or settings.mineru_executable)
         self.harness_port = int(saved.get("harness_port") or settings.harness_port)
         self.harness = HarnessRuntimeManager(settings.data_dir)
+        self.research_tasks: dict[str, asyncio.Task] = {}
+        self.research_signals: dict[str, CancellationSignal] = {}
+        self.research_steering: dict[str, list[dict[str, str]]] = {}
+        self.research_event_locks: dict[str, asyncio.Lock] = {}
+        self.shutting_down = False
 
 
 class LibraryResponse(BaseModel):
@@ -127,6 +138,15 @@ class ChatMessageRequest(BaseModel):
     content: str
     evidence_limit: int = 15
     mode: Literal["local", "hybrid", "online"] = "local"
+
+
+class ResearchRunRequest(ChatMessageRequest):
+    budgets: ResearchBudgets | None = None
+
+
+class ResearchSteerRequest(BaseModel):
+    kind: Literal["constraint", "follow_up"] = "constraint"
+    content: str = Field(min_length=1, max_length=2000)
 
 
 class ExportRequest(BaseModel):
@@ -180,6 +200,23 @@ class HarnessActionRequest(BaseModel):
     port: int = Field(default=3080, ge=1024, le=65535)
 
 
+class SkillInstallRequest(BaseModel):
+    source_kind: Literal["local", "archive", "github"]
+    source: str = Field(min_length=1, max_length=2048)
+    ref: str = Field(default="", max_length=255)
+    subpath: str = Field(default="", max_length=1024)
+    enabled: bool = False
+
+
+class SkillEnableRequest(BaseModel):
+    enabled: bool
+
+
+class SkillLaunchRequest(BaseModel):
+    library_id: str
+    port: int = Field(default=3080, ge=1024, le=65535)
+
+
 class PublicConfigUpdateRequest(BaseModel):
     contact_email: str | None = None
     minimax_group_id: str | None = None
@@ -224,6 +261,14 @@ def _safe_data_path(data_dir: Path, stored_path: str) -> Path:
     except ValueError as exc:
         raise HTTPException(status_code=403, detail="file path is outside the data directory") from exc
     return resolved
+
+
+def _run_library_id(database: Database, chat_session_id: str) -> str:
+    with database.session() as session:
+        chat_session = session.get(ChatSession, chat_session_id)
+        if not chat_session:
+            raise ValueError("chat session not found")
+        return chat_session.library_id
 
 
 def _item_pipeline_statuses(session: Session, library_id: str, item_ids: list[str]) -> dict[str, dict]:
@@ -436,6 +481,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_app: FastAPI):
         resolved_settings.ensure_directories()
         upgrade_schema(resolved_settings)
+        ResearchRunStore(state.database).mark_stale_runs_paused()
         worker_task = None
         parent_task = None
         if resolved_settings.worker_enabled:
@@ -448,6 +494,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            state.shutting_down = True
+            active_research_tasks = list(state.research_tasks.values())
+            for task in active_research_tasks:
+                task.cancel()
+            if active_research_tasks:
+                await asyncio.gather(*active_research_tasks, return_exceptions=True)
             if worker_task:
                 worker_task.cancel()
                 try:
@@ -586,6 +638,181 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             resolved_settings.deepseek_model,
         )
         return ResearchAgent(embedding_pipeline(), generator, literature_discovery())
+
+    run_store = ResearchRunStore(state.database)
+
+    async def append_research_event(run_id: str, event_type: str, payload: dict) -> dict:
+        lock = state.research_event_locks.setdefault(run_id, asyncio.Lock())
+        async with lock:
+            return await asyncio.to_thread(run_store.append_event, run_id, event_type, payload)
+
+    async def execute_research_run(run_id: str) -> None:
+        run = run_store.get_model(run_id)
+        if not run:
+            return
+        signal = state.research_signals.setdefault(run_id, CancellationSignal())
+
+        async def event_sink(event_type: str, payload: dict) -> None:
+            await append_research_event(run_id, event_type, payload)
+
+        async def steering_source() -> list[dict[str, str]]:
+            return state.research_steering.pop(run_id, [])
+
+        async def acquisition_source() -> dict | None:
+            current = await asyncio.to_thread(run_store.get_model, run_id)
+            if not current:
+                return None
+            approval = next(
+                (value for value in reversed(current.approvals) if value.get("action") == "import_dois"),
+                None,
+            )
+            if not approval:
+                return None
+            if approval.get("status") == "rejected":
+                return {"decision": "rejected", "ready": False}
+            if approval.get("status") != "approved":
+                return {"decision": "pending", "ready": False}
+            batch_id = str(approval.get("batch_id") or "")
+            library_id = _run_library_id(state.database, current.session_id)
+            with state.database.session() as session:
+                batch = session.get(ImportBatch, batch_id) if batch_id else None
+                batch_jobs = (
+                    list(session.scalars(select(Job).where(Job.batch_id == batch_id))) if batch_id else []
+                )
+                item_ids = {
+                    str(job.result.get("item_id") or "") for job in batch_jobs if job.result.get("item_id")
+                }
+                related_jobs = [
+                    job
+                    for job in session.scalars(select(Job))
+                    if (
+                        str(job.payload.get("item_id") or "") in item_ids
+                        or (
+                            job.job_type == JobType.EMBED_METADATA.value
+                            and str(job.payload.get("library_id") or "") == library_id
+                        )
+                    )
+                ]
+            active_statuses = {
+                JobStatus.QUEUED.value,
+                JobStatus.RUNNING.value,
+                JobStatus.RETRY_WAIT.value,
+            }
+            active = [job for job in related_jobs if job.status in active_statuses]
+            batch_finished = bool(batch and batch.status in {"complete", "partial", "failed"})
+            return {
+                "decision": "approved",
+                "batch_id": batch_id,
+                "batch_status": batch.status if batch else "missing",
+                "ready": batch_finished and not active,
+                "active_jobs": len(active),
+                "item_count": len(item_ids),
+            }
+
+        with state.database.session() as session:
+            previous_messages = list(
+                session.scalars(
+                    select(ChatMessage)
+                    .where(
+                        ChatMessage.session_id == run.session_id,
+                        ChatMessage.id != run.user_message_id,
+                    )
+                    .order_by(ChatMessage.created_at)
+                )
+            )
+        history = [
+            ConversationTurn(role=message.role, content=message.content)
+            for message in previous_messages[-8:]
+            if message.role in {"user", "assistant"}
+        ]
+        gateway = DeepSeekGateway(
+            DeepSeekClient(
+                SecretStore().get("deepseek_api_key"),
+                resolved_settings.deepseek_base_url,
+                resolved_settings.deepseek_model,
+            )
+        )
+        budgets = ResearchBudgets.model_validate(run.budgets or {})
+        orchestrator = ResearchOrchestrator(
+            embedding_pipeline(),
+            gateway,
+            literature_discovery(),
+            budgets=budgets,
+            event_sink=event_sink,
+            signal=signal,
+            steering_source=steering_source,
+            acquisition_source=acquisition_source,
+        )
+        try:
+            answer = await orchestrator.run(
+                _run_library_id(state.database, run.session_id),
+                run.question,
+                mode=run.mode,
+                conversation_history=history,
+                evidence_limit=budgets.evidence_limit,
+                session_memory=run_store.load_memory(run.session_id),
+            )
+            message = await asyncio.to_thread(run_store.complete, run_id, answer)
+            await event_sink(
+                "run_completed",
+                {
+                    "message_id": message.id,
+                    "metrics": answer.metrics or {},
+                    "limitations": answer.limitations,
+                },
+            )
+        except asyncio.CancelledError:
+            if state.shutting_down:
+                await asyncio.to_thread(
+                    run_store.pause,
+                    run_id,
+                    "The application stopped before this research run completed",
+                )
+            else:
+                await asyncio.to_thread(run_store.cancel, run_id)
+                await event_sink("run_cancelled", {"message": "研究任务已停止"})
+        except GenerationError as exc:
+            if exc.code == "no_evidence":
+                content = (
+                    "当前文库没有可用于回答该问题的题录、摘要或已解析全文。"
+                    "请先导入文献，或切换到“本地优先 + 联网”后重试。"
+                    if run.mode == "local"
+                    else "本次没有从当前文库或已启用的在线学术来源检索到可核验证据。"
+                )
+                answer = AgentAnswer(
+                    answer=content,
+                    evidence=[],
+                    citation_ids=[],
+                    limitations=["没有检索到可用于形成研究结论的证据。"],
+                    model="local-readiness-check",
+                    plan={},
+                    coverage=[],
+                    metrics={"empty_evidence": True},
+                )
+                message = await asyncio.to_thread(run_store.complete, run_id, answer)
+                await event_sink(
+                    "run_completed",
+                    {"message_id": message.id, "metrics": answer.metrics, "limitations": answer.limitations},
+                )
+            else:
+                await asyncio.to_thread(run_store.fail, run_id, exc.code, str(exc))
+                await event_sink("run_failed", {"code": exc.code, "message": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - persisted for diagnostics and surfaced to the client
+            logger.exception("Research run %s failed", run_id)
+            code = getattr(exc, "code", "research_run_failed")
+            await asyncio.to_thread(run_store.fail, run_id, str(code), str(exc))
+            await event_sink("run_failed", {"code": str(code), "message": str(exc)})
+        finally:
+            state.research_tasks.pop(run_id, None)
+            state.research_signals.pop(run_id, None)
+
+    def schedule_research_run(run_id: str) -> None:
+        if run_id in state.research_tasks:
+            raise ValueError("research run is already active")
+        state.research_signals[run_id] = CancellationSignal()
+        state.research_tasks[run_id] = asyncio.create_task(
+            execute_research_run(run_id), name=f"research-run-{run_id}"
+        )
 
     def get_session():
         with state.database.session() as session:
@@ -931,6 +1158,190 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             for message in messages
         ]
 
+    @app.post("/v1/chat/sessions/{chat_session_id}/runs", status_code=202)
+    async def create_research_run(chat_session_id: str, request: ResearchRunRequest) -> dict:
+        if not resolved_settings.research_loop_v2:
+            raise HTTPException(status_code=409, detail="research loop v2 is disabled")
+        question = request.content.strip()
+        if not question:
+            raise HTTPException(status_code=422, detail="message content is empty")
+        with state.database.session() as session:
+            chat_session = session.get(ChatSession, chat_session_id)
+            if not chat_session:
+                raise HTTPException(status_code=404, detail="chat session not found")
+            active = session.scalar(
+                select(ResearchRun.id).where(
+                    ResearchRun.session_id == chat_session_id,
+                    ResearchRun.status.in_(["queued", "running", "cancelling"]),
+                )
+            )
+            if active:
+                raise HTTPException(status_code=409, detail="this chat already has an active research run")
+            message = ChatMessage(session_id=chat_session_id, role="user", content=question)
+            session.add(message)
+            session.flush()
+            user_message_id = message.id
+            if chat_session.title == "New research":
+                chat_session.title = question[:100]
+            chat_session.updated_at = datetime.now(UTC)
+        budgets = request.budgets or ResearchBudgets(
+            parallel_scouts=resolved_settings.research_parallel_scouts
+        )
+        budgets = budgets.model_copy(update={"evidence_limit": request.evidence_limit})
+        run = await asyncio.to_thread(
+            run_store.create,
+            chat_session_id,
+            user_message_id,
+            question,
+            request.mode,
+            budgets.model_dump(),
+        )
+        await append_research_event(run.id, "run_created", {"status": "queued", "mode": request.mode})
+        schedule_research_run(run.id)
+        return run_store.get(run.id) or {"id": run.id, "status": "queued"}
+
+    @app.get("/v1/research/runs/{run_id}")
+    def get_research_run(run_id: str) -> dict:
+        run = run_store.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="research run not found")
+        return run
+
+    @app.get("/v1/chat/sessions/{chat_session_id}/runs")
+    def list_research_runs(chat_session_id: str, limit: int = 20) -> list[dict]:
+        with state.database.session() as session:
+            if not session.get(ChatSession, chat_session_id):
+                raise HTTPException(status_code=404, detail="chat session not found")
+        return run_store.list_for_session(chat_session_id, limit)
+
+    @app.get("/v1/research/runs/{run_id}/events")
+    async def stream_research_events(run_id: str, request: Request, after: int = 0):
+        if not run_store.get(run_id):
+            raise HTTPException(status_code=404, detail="research run not found")
+        header_sequence = request.headers.get("Last-Event-ID", "")
+        try:
+            cursor = max(after, int(header_sequence or 0))
+        except ValueError:
+            cursor = after
+
+        async def event_stream():
+            nonlocal cursor
+            idle_polls = 0
+            while True:
+                if await request.is_disconnected():
+                    return
+                events = await asyncio.to_thread(run_store.events_after, run_id, cursor)
+                for event in events:
+                    cursor = int(event["sequence"])
+                    payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    yield f"id: {cursor}\nevent: {event['type']}\ndata: {payload}\n\n"
+                run = await asyncio.to_thread(run_store.get, run_id)
+                if not run:
+                    return
+                if run["status"] in TERMINAL_RUN_STATUSES and not events:
+                    if await asyncio.to_thread(run_store.has_terminal_event, run_id):
+                        return
+                if events:
+                    idle_polls = 0
+                else:
+                    idle_polls += 1
+                    if idle_polls >= 40:
+                        idle_polls = 0
+                        yield ": keepalive\n\n"
+                await asyncio.sleep(0.25)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/v1/research/runs/{run_id}/cancel")
+    async def cancel_research_run(run_id: str) -> dict:
+        run = run_store.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="research run not found")
+        if run["status"] in TERMINAL_RUN_STATUSES:
+            return run
+        signal = state.research_signals.get(run_id)
+        if signal:
+            signal.cancel()
+        task = state.research_tasks.get(run_id)
+        if task:
+            task.cancel()
+        else:
+            await asyncio.to_thread(run_store.cancel, run_id)
+            await append_research_event(run_id, "run_cancelled", {"message": "研究任务已停止"})
+        return run_store.get(run_id) or run
+
+    @app.post("/v1/research/runs/{run_id}/steer")
+    async def steer_research_run(run_id: str, request: ResearchSteerRequest) -> dict:
+        run = run_store.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="research run not found")
+        if run["status"] in TERMINAL_RUN_STATUSES:
+            raise HTTPException(status_code=409, detail="research run is no longer active")
+        message = {"kind": request.kind, "content": request.content.strip()}
+        state.research_steering.setdefault(run_id, []).append(message)
+        await append_research_event(run_id, "steering_queued", message)
+        return {"run_id": run_id, "queued": True, **message}
+
+    @app.post("/v1/research/runs/{run_id}/retry", status_code=202)
+    async def retry_research_run(run_id: str) -> dict:
+        active_task = state.research_tasks.get(run_id)
+        if active_task:
+            persisted = run_store.get(run_id)
+            if not persisted or persisted["status"] not in {"failed", "paused", "cancelled"}:
+                raise HTTPException(status_code=409, detail="research run is already active")
+            try:
+                await asyncio.shield(active_task)
+            except asyncio.CancelledError:
+                pass
+            state.research_tasks.pop(run_id, None)
+        try:
+            await asyncio.to_thread(run_store.reset_for_retry, run_id)
+            await append_research_event(run_id, "run_retried", {})
+            schedule_research_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return run_store.get(run_id) or {"id": run_id, "status": "queued"}
+
+    @app.post("/v1/research/runs/{run_id}/approvals/{approval_id}", status_code=202)
+    async def approve_research_action(run_id: str, approval_id: str) -> dict:
+        run = run_store.get_model(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="research run not found")
+        approval = next((value for value in run.approvals if value.get("id") == approval_id), None)
+        if not approval:
+            raise HTTPException(status_code=404, detail="approval not found")
+        if approval.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="approval has already been handled")
+        if approval.get("action") != "import_dois":
+            raise HTTPException(status_code=422, detail="unsupported research approval action")
+        dois = [str(value) for value in approval.get("dois") or []]
+        library_id = _run_library_id(state.database, run.session_id)
+        with state.database.session() as session:
+            batch = JobService(session).create_doi_batch(library_id, dois, False)
+            batch_id = batch.id
+        approved = await asyncio.to_thread(run_store.approve, run_id, approval_id, batch_id)
+        await append_research_event(
+            run_id,
+            "approval_completed",
+            {"approval_id": approval_id, "batch_id": batch_id, "dois": dois},
+        )
+        return {"run_id": run_id, "batch_id": batch_id, "approval": approved}
+
+    @app.post("/v1/research/runs/{run_id}/approvals/{approval_id}/reject")
+    async def reject_research_action(run_id: str, approval_id: str) -> dict:
+        try:
+            rejected = await asyncio.to_thread(run_store.reject, run_id, approval_id)
+        except ValueError as exc:
+            detail = str(exc)
+            status_code = 404 if "not found" in detail else 409
+            raise HTTPException(status_code=status_code, detail=detail) from exc
+        await append_research_event(run_id, "approval_rejected", {"approval_id": approval_id})
+        return {"run_id": run_id, "approval": rejected}
+
     @app.post("/v1/chat/sessions/{chat_session_id}/messages")
     async def send_chat_message(chat_session_id: str, request: ChatMessageRequest) -> dict:
         question = request.content.strip()
@@ -1191,6 +1602,83 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/v1/harness/stop")
     async def stop_harness() -> dict:
         return await asyncio.to_thread(state.harness.stop)
+
+    @app.get("/v1/skills")
+    def list_skills() -> list[dict]:
+        return state.harness.skills.list()
+
+    @app.post("/v1/skills", status_code=201)
+    async def install_skill(request: SkillInstallRequest) -> dict:
+        try:
+            return await asyncio.to_thread(
+                state.harness.skills.install,
+                request.source_kind,
+                request.source,
+                ref=request.ref,
+                subpath=request.subpath,
+                enabled=request.enabled,
+            )
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/{name}/update")
+    async def update_skill(name: str) -> dict:
+        try:
+            return await asyncio.to_thread(state.harness.skills.update, name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.put("/v1/skills/{name}/enabled")
+    def enable_skill(name: str, request: SkillEnableRequest) -> dict:
+        try:
+            return state.harness.skills.set_enabled(name, request.enabled)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.delete("/v1/skills/{name}", status_code=204)
+    def uninstall_skill(name: str) -> None:
+        try:
+            state.harness.skills.uninstall(name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/skills/{name}/reveal")
+    async def reveal_skill(name: str) -> dict:
+        try:
+            path = await asyncio.to_thread(state.harness.skills.reveal, name)
+        except (OSError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"path": path}
+
+    @app.post("/v1/skills/{name}/launch")
+    async def launch_skill(name: str, request: SkillLaunchRequest) -> dict:
+        with state.database.session() as session:
+            library = session.get(Library, request.library_id)
+            if not library:
+                raise HTTPException(status_code=404, detail="library not found")
+            library_name = library.name
+        try:
+            prompt = state.harness.skills.launch_prompt(name, library_name)
+            current = state.harness.status(request.port)
+            if not current["configured"]:
+                raise SkillError("Install the Harness environment before using a Skill")
+            if current["running"] and current["skills"]["restart_required"]:
+                if not current["owned_process"]:
+                    raise SkillError(
+                        "Harness is running outside ResearchBrain; stop it before deploying changed Skills"
+                    )
+                await asyncio.to_thread(state.harness.stop)
+            status = await asyncio.to_thread(
+                state.harness.start,
+                request.port,
+                request.library_id,
+                SecretStore().get("deepseek_api_key"),
+                resolved_settings.deepseek_base_url,
+                resolved_settings.deepseek_model,
+            )
+        except (OSError, HarnessInstallError, SkillError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"skill": name, "prompt": prompt, "harness": status}
 
     @app.get("/v1/libraries/{library_id}/items")
     def list_items(

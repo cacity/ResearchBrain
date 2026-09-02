@@ -24,6 +24,8 @@ repository is published.
 - Rebuildable local embedding providers and configurable reranking.
 - Retrieval evaluation dashboard with Recall@k, MRR, nDCG, and citation support.
 - User-controlled local, online, and combined research modes.
+- Iterative evidence research, verification, cancellation, and recovery as specified in the
+  [research orchestrator implementation plan](research-orchestrator-plan.md).
 
 ## Later
 
