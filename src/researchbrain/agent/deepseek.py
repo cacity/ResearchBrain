@@ -55,7 +55,14 @@ class DeepSeekClient:
         except httpx.TimeoutException as exc:
             raise GenerationError("timeout", "DeepSeek request timed out") from exc
         except httpx.HTTPStatusError as exc:
-            code = "authentication_failed" if exc.response.status_code in {401, 403} else "http_error"
+            if exc.response.status_code in {401, 403}:
+                code = "authentication_failed"
+            elif exc.response.status_code == 429:
+                code = "rate_limited"
+            elif exc.response.status_code >= 500:
+                code = "provider_unavailable"
+            else:
+                code = "http_error"
             raise GenerationError(code, f"DeepSeek HTTP {exc.response.status_code}") from exc
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise GenerationError("invalid_response", f"Invalid DeepSeek response: {exc}") from exc

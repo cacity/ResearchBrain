@@ -19,7 +19,7 @@ Metadata, PDFs, parsed artifacts, vector indexes, and conversations remain on th
 Only the requests needed for enabled online discovery or configured MiniMax and DeepSeek calls leave the
 device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreSQL.
 
-> Status: `0.2.0 alpha`. The core research loop works, but this is not a full Zotero replacement.
+> Status: `0.3.0 alpha`. The core research loop works, but this is not a full Zotero replacement.
 
 ![ResearchBrain desktop library](docs/images/researchbrain-library.png)
 
@@ -34,10 +34,15 @@ device. The Windows 11 application runs without WSL, gbrain, Docker, or PostgreS
 - Parses PDFs with MinerU and falls back to PyMuPDF, preserving page and section provenance.
 - Embeds titles, abstracts, and parsed PDF text with MiniMax, then combines LanceDB full-text, vector,
   and RRF hybrid retrieval. Empty libraries return an explicit readiness response.
-- Supports local-only, local-first plus online, and online-research chat scopes; DeepSeek must cite supplied
-  local or online evidence IDs.
-- Persists every conversation, message, and citation per library. The current question has retrieval weight
-  `1.0`, recent-question context has weight `0.25`, and prior model answers have evidence weight `0`.
+- Runs local-only, local-first plus online, and online research as a staged loop: question decomposition,
+  iterative retrieval, coverage assessment, synthesis, independent review, and bounded revision. DeepSeek may
+  cite only IDs in the current run's evidence ledger.
+- Streams research progress, accepts mid-run constraints, supports cancellation and retry after failure or
+  restart, and persists steps, every inspected candidate, and the final cited evidence.
+- Requests approval before importing DOI-backed online evidence. Approved work enters the existing lawful
+  full-text, parsing, and embedding jobs and is re-retrieved in the same run when it finishes within budget.
+- Persists every conversation, message, and citation per library. Session summaries provide continuity, while
+  prior model answers always have evidence weight `0`.
 - Hands searches off to Google Scholar in the browser instead of relying on unstable page scraping.
 - Exports CSL-JSON, BibTeX, RIS, DOI lists, and Markdown.
 - Exposes the same local corpus through the desktop app, FastAPI, CLI, and stdio MCP.
@@ -81,6 +86,32 @@ npm run tauri dev
 
 Configure provider credentials in the desktop settings so they are stored in Windows Credential Manager.
 The default data directory is `%LOCALAPPDATA%\ResearchBrain`.
+
+## Iterative research orchestrator
+
+Evidence Chat uses persisted research runs by default: `planning → local_search → gap_assessment →
+online_search → synthesis → verification`. Complex questions can use up to three local retrieval rounds and
+one revision. Optional read-only scouts split subquestions in parallel and remain disabled by default until
+their quality and cost benefit is measured.
+
+```powershell
+$env:RESEARCHBRAIN_RESEARCH_LOOP_V2 = "1"  # enabled by default
+$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # optional experiment
+```
+
+The repository includes a fixed 24-case regression set. Start the local API, then run:
+
+```powershell
+$env:PYTHONPATH = "src"
+python .\scripts\evaluate_research_answers.py `
+  --library-id <library-id> `
+  --empty-library-id <empty-library-id> `
+  --output .\research-quality-results.json
+```
+
+The report records citation-ID validity, subquestion coverage, visible empty results, latency, model steps,
+and tool calls. It uses real provider requests and is therefore not part of normal CI. See the
+[research orchestrator plan](docs/research-orchestrator-plan.md) for architecture and implementation status.
 
 ## Codex Skills
 

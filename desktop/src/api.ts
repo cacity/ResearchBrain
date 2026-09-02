@@ -126,6 +126,62 @@ export type ChatSessionSummary = {
   updated_at: string;
 };
 
+export type ResearchApproval = {
+  id: string;
+  action: "import_dois";
+  dois: string[];
+  reason: string;
+  status: "pending" | "approved" | "rejected";
+  batch_id?: string;
+};
+
+export type ResearchRun = {
+  id: string;
+  session_id: string;
+  user_message_id: string;
+  assistant_message_id: string | null;
+  mode: "local" | "hybrid" | "online";
+  status:
+    | "queued"
+    | "running"
+    | "paused"
+    | "completed"
+    | "failed"
+    | "cancelled";
+  phase: string;
+  question: string;
+  plan: Record<string, unknown>;
+  coverage: Array<Record<string, unknown>>;
+  budgets: Record<string, unknown>;
+  approvals: ResearchApproval[];
+  limitations: string[];
+  metrics: Record<string, unknown>;
+  error_code: string;
+  error_message: string;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+};
+
+export type ResearchEvent = {
+  type: string;
+  run_id: string;
+  sequence: number;
+  phase?: string;
+  label?: string;
+  delta?: string;
+  count?: number;
+  levels?: Record<string, number>;
+  counts?: Record<string, number>;
+  coverage?: Array<Record<string, unknown>>;
+  message_id?: string;
+  message?: string;
+  code?: string;
+  approval?: ResearchApproval;
+  metrics?: Record<string, unknown>;
+  limitations?: string[];
+};
+
 export type Evidence = {
   id: string;
   chunk_id: string;
@@ -434,6 +490,89 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content, evidence_limit: 15, mode }),
     }),
+  createResearchRun: (
+    sessionId: string,
+    content: string,
+    mode: "local" | "hybrid" | "online" = "local",
+  ) =>
+    request<ResearchRun>(`/chat/sessions/${sessionId}/runs`, {
+      method: "POST",
+      body: JSON.stringify({ content, evidence_limit: 20, mode }),
+    }),
+  researchRun: (runId: string) =>
+    request<ResearchRun>(`/research/runs/${runId}`),
+  researchRuns: (sessionId: string) =>
+    request<ResearchRun[]>(`/chat/sessions/${sessionId}/runs`),
+  cancelResearchRun: (runId: string) =>
+    request<ResearchRun>(`/research/runs/${runId}/cancel`, {
+      method: "POST",
+    }),
+  retryResearchRun: (runId: string) =>
+    request<ResearchRun>(`/research/runs/${runId}/retry`, {
+      method: "POST",
+    }),
+  steerResearchRun: (
+    runId: string,
+    content: string,
+    kind: "constraint" | "follow_up" = "constraint",
+  ) =>
+    request<{ run_id: string; queued: boolean }>(
+      `/research/runs/${runId}/steer`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content, kind }),
+      },
+    ),
+  approveResearchAction: (runId: string, approvalId: string) =>
+    request<{ run_id: string; batch_id: string; approval: ResearchApproval }>(
+      `/research/runs/${runId}/approvals/${approvalId}`,
+      { method: "POST" },
+    ),
+  rejectResearchAction: (runId: string, approvalId: string) =>
+    request<{ run_id: string; approval: ResearchApproval }>(
+      `/research/runs/${runId}/approvals/${approvalId}/reject`,
+      { method: "POST" },
+    ),
+  streamResearchEvents: async (
+    runId: string,
+    onEvent: (event: ResearchEvent) => void,
+    signal?: AbortSignal,
+  ) => {
+    await ensureConfigured();
+    const response = await fetch(`${apiBase}/research/runs/${runId}/events`, {
+      headers: {
+        Accept: "text/event-stream",
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+      },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      const payload = await response
+        .json()
+        .catch(() => ({ detail: response.statusText }));
+      throw new Error(String(payload.detail || `HTTP ${response.status}`));
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const data = block
+          .split("\n")
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data) onEvent(JSON.parse(data) as ResearchEvent);
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (done) break;
+    }
+  },
   discover: (query: string, options: DiscoverySearchOptions) =>
     request<{
       records: DiscoveryRecord[];

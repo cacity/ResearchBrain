@@ -1,0 +1,148 @@
+[
+  {
+    "id": "local-landscape",
+    "mode": "local",
+    "question": "概括当前文库中该主题的主要研究方向，并区分观测、模型和方法论文。",
+    "checks": ["coverage", "citation_support"]
+  },
+  {
+    "id": "local-data",
+    "mode": "local",
+    "question": "这些研究分别使用了哪些数据源、时间范围和空间范围？",
+    "checks": ["coverage", "fulltext_boundary"]
+  },
+  {
+    "id": "local-workflow",
+    "mode": "local",
+    "question": "比较主要数据处理流程，指出共同步骤和关键差异。",
+    "checks": ["coverage", "fulltext_boundary"]
+  },
+  {
+    "id": "local-method-origin",
+    "mode": "local",
+    "question": "这些方法建立在哪些已有方法之上，具体改进了什么？",
+    "checks": ["coverage", "citation_support"]
+  },
+  {
+    "id": "local-results",
+    "mode": "local",
+    "question": "综合主要定量结果，并明确每个数字来自哪篇文献。",
+    "checks": ["citation_support", "fulltext_boundary"]
+  },
+  {
+    "id": "local-figures",
+    "mode": "local",
+    "question": "哪些关键图最能支撑主要结论？说明图号、含义和证据页码。",
+    "checks": ["fulltext_boundary", "citation_support"]
+  },
+  {
+    "id": "local-contradiction",
+    "mode": "local",
+    "question": "文库中的研究是否存在相互矛盾的结论？分别说明证据和可能原因。",
+    "checks": ["coverage", "citation_support"]
+  },
+  {
+    "id": "local-limitations",
+    "mode": "local",
+    "question": "现有研究有哪些共同局限，哪些结论仍缺乏全文证据？",
+    "checks": ["evidence_limits"]
+  },
+  {
+    "id": "local-timeline",
+    "mode": "local",
+    "question": "按时间梳理该方向的技术演进，并标注关键论文。",
+    "checks": ["coverage", "citation_support"]
+  },
+  {
+    "id": "local-reproducibility",
+    "mode": "local",
+    "question": "基于文库证据，给出一套可复现的最小研究流程和所需数据。",
+    "checks": ["fulltext_boundary", "evidence_limits"]
+  },
+  {
+    "id": "local-followup",
+    "mode": "local",
+    "question": "结合上一轮结论，只补充尚未回答的研究缺口，不重复已有内容。",
+    "checks": ["continuity", "coverage"]
+  },
+  {
+    "id": "local-no-match",
+    "mode": "local",
+    "question": "检索一个当前文库明显不包含的主题，并明确说明是否有足够证据。",
+    "checks": ["visible_empty_response", "evidence_limits"]
+  },
+  {
+    "id": "hybrid-recent",
+    "mode": "hybrid",
+    "question": "在本地文献基础上补充最近五年的相关研究，列出 DOI 并区分本地全文与在线摘要证据。",
+    "checks": ["source_boundary", "citation_support"]
+  },
+  {
+    "id": "hybrid-authors",
+    "mode": "hybrid",
+    "question": "国内外哪些团队持续开展该方向研究？仅给出有来源支持的判断。",
+    "checks": ["coverage", "source_boundary"]
+  },
+  {
+    "id": "hybrid-datasets",
+    "mode": "hybrid",
+    "question": "联网补充目前常用的公开数据集，并说明本地文献是否实际使用过。",
+    "checks": ["source_boundary", "citation_support"]
+  },
+  {
+    "id": "hybrid-methods",
+    "mode": "hybrid",
+    "question": "比较本地方法与在线发现的新方法，指出可验证的改进关系。",
+    "checks": ["source_boundary", "fulltext_boundary"]
+  },
+  {
+    "id": "hybrid-gaps",
+    "mode": "hybrid",
+    "question": "综合本地与在线证据提出三个可检验研究假设，并说明证据不足处。",
+    "checks": ["coverage", "evidence_limits"]
+  },
+  {
+    "id": "hybrid-acquire",
+    "mode": "hybrid",
+    "question": "寻找值得加入文库的开放文献，但在实际导入前请求确认。",
+    "checks": ["approval_required", "source_boundary"]
+  },
+  {
+    "id": "online-landscape",
+    "mode": "online",
+    "question": "仅用在线学术来源概述该主题的研究版图，并给出 DOI。",
+    "checks": ["source_boundary", "citation_support"]
+  },
+  {
+    "id": "online-provider-failure",
+    "mode": "online",
+    "question": "即使部分在线来源不可用，也返回可诊断的受限结果。",
+    "checks": ["visible_failure", "evidence_limits"]
+  },
+  {
+    "id": "empty-local",
+    "mode": "local",
+    "library": "empty",
+    "question": "这个空文库中有哪些相关研究？",
+    "checks": ["visible_empty_response"]
+  },
+  {
+    "id": "empty-hybrid",
+    "mode": "hybrid",
+    "library": "empty",
+    "question": "本地没有文献时先明确本地状态，再尝试在线发现。",
+    "checks": ["visible_empty_response", "source_boundary"]
+  },
+  {
+    "id": "invalid-citation-guard",
+    "mode": "local",
+    "question": "回答时只能引用系统实际提供的证据 ID。",
+    "checks": ["citation_id_valid"]
+  },
+  {
+    "id": "long-session",
+    "mode": "local",
+    "question": "在长会话中总结前述结论，但不得把历史模型回答当作新证据。",
+    "checks": ["continuity", "citation_support"]
+  }
+]

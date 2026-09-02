@@ -29,14 +29,23 @@ import {
   RefreshCw,
   Search,
   Save,
+  Send,
   Settings,
   SlidersHorizontal,
+  Square,
   SquareTerminal,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -50,6 +59,9 @@ import {
   Job,
   Library,
   HarnessStatus,
+  ResearchApproval,
+  ResearchEvent,
+  ResearchRun,
   SkillRecord,
   ZoteroProbeStatus,
   ZoteroSyncStatus,
@@ -747,6 +759,36 @@ function ChatView({
   const [selectedEvidence, setSelectedEvidence] = useState<ChatEvidence | null>(
     null,
   );
+  const [activeRunId, setActiveRunId] = useState("");
+  const [runLabel, setRunLabel] = useState("");
+  const [runEvidenceCount, setRunEvidenceCount] = useState(0);
+  const [runCoverage, setRunCoverage] = useState<Record<string, number>>({});
+  const [streamedAnswer, setStreamedAnswer] = useState("");
+  const [runError, setRunError] = useState("");
+  const [pendingApproval, setPendingApproval] =
+    useState<ResearchApproval | null>(null);
+  const [approvalRunId, setApprovalRunId] = useState("");
+  const [approvalStatus, setApprovalStatus] = useState("");
+  const [steeringInput, setSteeringInput] = useState("");
+  const [recoverableRun, setRecoverableRun] = useState<ResearchRun | null>(
+    null,
+  );
+  const streamController = useRef<AbortController | null>(null);
+  const restoreStoredRuns = (runs: ResearchRun[]) => {
+    setRecoverableRun(
+      runs.find((run) =>
+        ["paused", "failed", "cancelled"].includes(run.status),
+      ) || null,
+    );
+    const approvalRun = runs.find((run) =>
+      run.approvals.some((approval) => approval.status === "pending"),
+    );
+    const approval = approvalRun?.approvals.find(
+      (value) => value.status === "pending",
+    );
+    setPendingApproval(approval || null);
+    setApprovalRunId(approvalRun?.id || "");
+  };
   useEffect(() => {
     let cancelled = false;
     setLoadingHistory(true);
@@ -755,6 +797,16 @@ function ChatView({
     setMessages([]);
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
+    setActiveRunId("");
+    setRunLabel("");
+    setRunEvidenceCount(0);
+    setRunCoverage({});
+    setStreamedAnswer("");
+    setRunError("");
+    setPendingApproval(null);
+    setApprovalRunId("");
+    setRecoverableRun(null);
+    streamController.current?.abort();
     api
       .chatSessions(library.id)
       .then(async (values) => {
@@ -762,10 +814,14 @@ function ChatView({
         setSessions(values);
         if (values.length) {
           const latestId = values[0].id;
-          const restored = await api.messages(latestId);
+          const [restored, runs] = await Promise.all([
+            api.messages(latestId),
+            api.researchRuns(latestId),
+          ]);
           if (!cancelled) {
             setSessionId(latestId);
             setMessages(restored);
+            restoreStoredRuns(runs);
           }
         }
       })
@@ -777,6 +833,7 @@ function ChatView({
       });
     return () => {
       cancelled = true;
+      streamController.current?.abort();
     };
   }, [library.id]);
   const openSession = async (id: string) => {
@@ -785,7 +842,12 @@ function ChatView({
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
     try {
-      setMessages(await api.messages(id));
+      const [restored, runs] = await Promise.all([
+        api.messages(id),
+        api.researchRuns(id),
+      ]);
+      setMessages(restored);
+      restoreStoredRuns(runs);
       setSessionId(id);
     } finally {
       setLoadingHistory(false);
@@ -797,6 +859,9 @@ function ChatView({
     setMessages([]);
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
+    setRecoverableRun(null);
+    setPendingApproval(null);
+    setApprovalRunId("");
   };
   const selectEvidence = (evidence: ChatEvidence) => {
     setSelectedEvidence(evidence);
@@ -821,12 +886,161 @@ function ChatView({
       setImportingEvidence(false);
     }
   };
+  const handleResearchEvent = (event: ResearchEvent) => {
+    if (event.type === "run_retried") {
+      setRunError("");
+      setStreamedAnswer("");
+      setRunEvidenceCount(0);
+      setRunCoverage({});
+    }
+    if (event.type === "phase_started" && event.label) setRunLabel(event.label);
+    if (event.type === "evidence_updated" && typeof event.count === "number") {
+      setRunEvidenceCount(event.count);
+    }
+    if (event.type === "coverage_updated" && event.counts) {
+      setRunCoverage(event.counts);
+    }
+    if (event.type === "answer_delta" && event.delta) {
+      setStreamedAnswer((value) => value + event.delta);
+    }
+    if (event.type === "approval_available" && event.approval) {
+      setPendingApproval(event.approval);
+      setApprovalRunId(event.run_id);
+    }
+    if (event.type === "acquisition_updated") {
+      setRunLabel("已确认导入，正在等待开放全文处理");
+    }
+    if (event.type === "run_failed") {
+      setRunError(event.message || event.code || "研究任务失败");
+    }
+    if (event.type === "run_cancelled") setRunLabel("研究任务已停止");
+  };
+  const stopResearch = async () => {
+    if (!activeRunId) return;
+    setRunLabel("正在停止研究任务");
+    try {
+      await api.cancelResearchRun(activeRunId);
+    } catch (reason) {
+      setRunError(String(reason));
+    }
+  };
+  const submitSteering = async () => {
+    const content = steeringInput.trim();
+    if (!activeRunId || !content) return;
+    try {
+      await api.steerResearchRun(activeRunId, content);
+      setSteeringInput("");
+      setRunLabel("补充要求已加入，将在下一阶段生效");
+    } catch (reason) {
+      setRunError(String(reason));
+    }
+  };
+  const approveAcquisition = async () => {
+    if (!approvalRunId || !pendingApproval) return;
+    setApprovalStatus("正在创建 DOI 与开放全文任务");
+    try {
+      const result = await api.approveResearchAction(
+        approvalRunId,
+        pendingApproval.id,
+      );
+      setPendingApproval({
+        ...pendingApproval,
+        status: "approved",
+        batch_id: result.batch_id,
+      });
+      setApprovalStatus(`已排队，批次 ${result.batch_id.slice(0, 8)}`);
+      onImported();
+    } catch (reason) {
+      setApprovalStatus(`导入失败：${String(reason)}`);
+    }
+  };
+  const skipAcquisition = async () => {
+    if (!approvalRunId || !pendingApproval) return;
+    try {
+      await api.rejectResearchAction(approvalRunId, pendingApproval.id);
+      setPendingApproval(null);
+      setApprovalRunId("");
+      setApprovalStatus("");
+      setRunLabel("已跳过导入，继续综合现有证据");
+    } catch (reason) {
+      setApprovalStatus(`操作失败：${String(reason)}`);
+    }
+  };
+  const followResearchRun = async (runId: string, id: string) => {
+    setActiveRunId(runId);
+    const controller = new AbortController();
+    streamController.current = controller;
+    await api.streamResearchEvents(
+      runId,
+      handleResearchEvent,
+      controller.signal,
+    );
+    const completed = await api.researchRun(runId);
+    if (completed.status === "completed") {
+      setMessages(await api.messages(id));
+      setRecoverableRun(null);
+    } else if (completed.status === "failed") {
+      setRecoverableRun(completed);
+      throw new Error(completed.error_message || "研究任务失败");
+    } else if (completed.status === "paused") {
+      setRecoverableRun(completed);
+      throw new Error(completed.error_message || "研究任务已暂停");
+    } else if (completed.status === "cancelled") {
+      setRecoverableRun(completed);
+      setMessages((values) => [
+        ...values,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "研究任务已停止。已完成的检索状态仍保留在本地运行记录中。",
+          citations: [],
+          model: "local-run-control",
+        },
+      ]);
+    }
+    api
+      .chatSessions(library.id)
+      .then(setSessions)
+      .catch(() => undefined);
+  };
+  const resumeResearch = async () => {
+    if (!recoverableRun || busy) return;
+    setBusy(true);
+    setRunLabel("正在恢复研究任务");
+    setRunEvidenceCount(0);
+    setRunCoverage({});
+    setStreamedAnswer("");
+    setRunError("");
+    try {
+      const resumed = await api.retryResearchRun(recoverableRun.id);
+      setRecoverableRun(null);
+      await followResearchRun(resumed.id, resumed.session_id);
+    } catch (reason) {
+      const raw = reason instanceof Error ? reason.message : String(reason);
+      setRunError(chatErrorText(raw));
+    } finally {
+      setBusy(false);
+      setActiveRunId("");
+      setRunLabel("");
+      setStreamedAnswer("");
+      streamController.current = null;
+    }
+  };
   const send = async (event: FormEvent) => {
     event.preventDefault();
     const question = input.trim();
     if (!question || busy) return;
     setInput("");
     setBusy(true);
+    setRunLabel("正在创建研究任务");
+    setRunEvidenceCount(0);
+    setRunCoverage({});
+    setStreamedAnswer("");
+    setRunError("");
+    setPendingApproval(null);
+    setApprovalRunId("");
+    setApprovalStatus("");
+    setRecoverableRun(null);
     setMessages((values) => [
       ...values,
       {
@@ -846,12 +1060,8 @@ function ChatView({
           .then(setSessions)
           .catch(() => undefined);
       }
-      const answer = await api.sendMessage(id, question, mode);
-      setMessages((values) => [...values, answer]);
-      api
-        .chatSessions(library.id)
-        .then(setSessions)
-        .catch(() => undefined);
+      const run = await api.createResearchRun(id, question, mode);
+      await followResearchRun(run.id, id);
     } catch (reason) {
       const raw = reason instanceof Error ? reason.message : String(reason);
       const detail = chatErrorText(raw);
@@ -868,6 +1078,10 @@ function ChatView({
       ]);
     } finally {
       setBusy(false);
+      setActiveRunId("");
+      setRunLabel("");
+      setStreamedAnswer("");
+      streamController.current = null;
     }
   };
   return (
@@ -966,13 +1180,103 @@ function ChatView({
               )}
             </article>
           ))}
-          {busy && (
-            <div className="thinking">
-              <LoaderCircle className="spin" size={18} />
-              {mode === "local"
-                ? "正在准备题录/摘要索引并检索本地证据"
-                : "正在生成检索式并查询学术数据源"}
-            </div>
+          {!busy && recoverableRun && (
+            <section className="research-recovery" aria-live="polite">
+              <div>
+                <strong>
+                  {recoverableRun.status === "paused"
+                    ? "上次调研已暂停"
+                    : recoverableRun.status === "cancelled"
+                      ? "上次调研已停止"
+                      : "上次调研未完成"}
+                </strong>
+                <span>
+                  {recoverableRun.error_message ||
+                    "可以从保存的问题与运行配置重新执行。"}
+                </span>
+              </div>
+              <button type="button" onClick={() => void resumeResearch()}>
+                <RefreshCw size={14} />
+                重新运行
+              </button>
+            </section>
+          )}
+          {(busy || pendingApproval) && (
+            <section className="research-progress" aria-live="polite">
+              <div className="research-progress-title">
+                {busy ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <Check size={16} />
+                )}
+                <strong>
+                  {busy ? runLabel || "正在执行多轮证据调研" : "调研已完成"}
+                </strong>
+              </div>
+              {busy && (
+                <div className="research-progress-metrics">
+                  <span>证据 {runEvidenceCount}</span>
+                  <span>已覆盖 {runCoverage.covered || 0}</span>
+                  <span>部分覆盖 {runCoverage.partial || 0}</span>
+                  <span>待补充 {runCoverage.insufficient_evidence || 0}</span>
+                </div>
+              )}
+              {runError && <p className="research-run-error">{runError}</p>}
+              {busy && activeRunId && (
+                <div className="research-steering">
+                  <input
+                    value={steeringInput}
+                    onChange={(event) => setSteeringInput(event.target.value)}
+                    placeholder="补充限制，例如：只看最近五年"
+                    aria-label="补充研究要求"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void submitSteering()}
+                    disabled={!steeringInput.trim()}
+                    title="加入补充要求"
+                  >
+                    <Send size={14} />
+                  </button>
+                </div>
+              )}
+              {pendingApproval && (
+                <div className="research-approval">
+                  <strong>
+                    发现 {pendingApproval.dois.length} 篇可导入文献
+                  </strong>
+                  <span>{pendingApproval.dois.slice(0, 3).join(" · ")}</span>
+                  {pendingApproval.status === "pending" ? (
+                    <div className="research-approval-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void skipAcquisition()}
+                      >
+                        跳过
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void approveAcquisition()}
+                      >
+                        <Import size={13} />
+                        导入并查找开放全文
+                      </button>
+                    </div>
+                  ) : (
+                    <small>{approvalStatus || "已创建导入任务"}</small>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
+          {busy && streamedAnswer && (
+            <article className="message assistant streaming-answer">
+              <div className="message-role">ResearchBrain</div>
+              <div className="message-content">
+                <AssistantMarkdown content={streamedAnswer} />
+              </div>
+            </article>
           )}
         </div>
         <form className="composer" onSubmit={send}>
@@ -1022,10 +1326,16 @@ function ChatView({
           />
           <button
             className="send-button"
-            disabled={!input.trim() || busy}
-            title="发送"
+            type={busy ? "button" : "submit"}
+            onClick={busy ? () => void stopResearch() : undefined}
+            disabled={!busy && !input.trim()}
+            title={busy ? "停止研究" : "发送"}
           >
-            <Play size={18} fill="currentColor" />
+            {busy ? (
+              <Square size={15} fill="currentColor" />
+            ) : (
+              <Play size={18} fill="currentColor" />
+            )}
           </button>
         </form>
       </div>

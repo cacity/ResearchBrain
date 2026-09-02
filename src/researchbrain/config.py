@@ -47,6 +47,8 @@ class Settings:
     worker_poll_seconds: float = 1.0
     zotero_data_dir: Path = Path.home() / "Zotero"
     harness_port: int = 3080
+    research_loop_v2: bool = True
+    research_parallel_scouts: bool = False
 
     @classmethod
     def load(cls) -> Settings:
@@ -106,6 +108,10 @@ class Settings:
                     str(saved.get("harness_port") or 3080),
                 )
             ),
+            research_loop_v2=os.getenv("RESEARCHBRAIN_RESEARCH_LOOP_V2", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
+            research_parallel_scouts=os.getenv("RESEARCHBRAIN_PARALLEL_SCOUTS", "0").strip().lower()
+            not in {"0", "false", "no", "off"},
         )
 
     def ensure_directories(self) -> None:

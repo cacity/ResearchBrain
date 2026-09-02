@@ -10,6 +10,27 @@ All notable changes to this project are documented in this file. The format is b
 
 - Open-source repository metadata, community files, CI, security policy, and contributor documentation.
 
+## [0.3.0] - 2026-09-02
+
+### Added
+
+- Persisted multi-round research runs with planning, iterative retrieval, evidence coverage assessment,
+  synthesis, independent review, bounded revision, cancellation, steering, SSE progress, and retry.
+- A complete evidence ledger that distinguishes metadata, abstracts, sections, and page-level full text while
+  retaining both cited and inspected sources for audit.
+- Explicit DOI acquisition approval, skip, background job tracking, and same-run re-retrieval when imported
+  evidence finishes within the configured wait budget.
+- Structured session memory with zero evidentiary weight for prior model answers, plus optional read-only
+  parallel scouts isolated by subquestion.
+- A fixed 24-case V1/V2 research quality set and deterministic citation and coverage scoring.
+- Desktop progress, stop, mid-run constraint, approval, and failed or paused run recovery controls.
+
+### Changed
+
+- Evidence Chat uses the V2 research orchestrator by default while retaining the legacy synchronous API for
+  rollback and comparison.
+- Provider errors and empty evidence always produce a visible, diagnosable terminal state.
+
 ## [0.1.8] - 2026-08-17
 
 ### Added

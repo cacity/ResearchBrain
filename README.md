@@ -21,7 +21,7 @@ CSL-JSON、BibTeX、RIS、DOI 清单或 Markdown，也可通过 MCP 交给 Codex
 MiniMax、DeepSeek 时才会发送相应请求。应用可在 Windows 11 上独立运行，不依赖 WSL、gbrain、
 Docker 或 PostgreSQL。
 
-> 当前为 `0.2.0 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
+> 当前为 `0.3.0 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
 
 ![ResearchBrain 桌面界面](docs/images/researchbrain-library.png)
 
@@ -36,8 +36,10 @@ Docker 或 PostgreSQL。
 - **PDF 解析**：MinerU 优先、PyMuPDF 回退，输出 Markdown、结构化 JSON、页码、章节和图表位置。
 - **本地检索**：MiniMax `embo-01` 同时向量化题录、摘要和 PDF 全文，LanceDB 提供全文、向量与
   RRF 融合排序；空文库也会返回明确的就绪状态说明。
-- **证据问答**：支持“仅本地”“本地优先 + 联网”“全网调研”；DeepSeek 只能引用提供的本地或在线证据 ID。
-- **连续对话**：按文库永久保存全部会话、消息和引用并可恢复；当前问题检索权重为 `1.0`，最近问题的上下文检索权重为 `0.25`，历史模型回答只用于理解上下文，证据权重始终为 `0`。
+- **多轮证据调研**：支持“仅本地”“本地优先 + 联网”“全网调研”；自动拆分子问题、执行多轮检索、检查证据覆盖、综合结论并独立复核，DeepSeek 只能引用本轮证据账本中的 ID。
+- **可观察与可恢复**：实时显示规划、检索、覆盖、综合和核验阶段；支持停止、中途补充限制、失败或重启后重新运行，并永久保存运行步骤、全部候选证据和最终引用。
+- **受控文献回填**：在线证据有 DOI 时先请求确认；确认后创建去重导入、开放全文、解析和向量任务，在等待预算内完成时自动补检索，超时则保留后台任务并明确说明限制。
+- **连续对话**：按文库永久保存全部会话、消息和引用；会话摘要只提供连续性，历史模型回答不作为事实证据，证据权重始终为 `0`。
 - **Scholar 补充**：可将检索式直接交给浏览器中的 Google Scholar，避免依赖不稳定的页面抓取。
 - **文献导出**：CSL-JSON、BibTeX、RIS、DOI 清单和 Markdown。
 - **Agent 接入**：FastAPI、CLI、桌面应用和 stdio MCP 共用同一 SQLite 与 LanceDB 数据。
@@ -112,6 +114,31 @@ npm run dev
 
 生产桌面版会随机选择 loopback 端口并生成 256 位会话令牌；开发 API 默认使用
 `127.0.0.1:8765`，Vite 默认使用 `127.0.0.1:1420`。
+
+## 多轮研究编排
+
+“证据对话”默认使用持久化研究运行：`planning → local_search → gap_assessment → online_search →
+synthesis → verification`。复杂问题可以进行最多三轮本地补检索和一次修订；可选只读 scout 会并行
+处理不同子问题，但默认关闭，便于先比较成本与质量。
+
+```powershell
+$env:RESEARCHBRAIN_RESEARCH_LOOP_V2 = "1"  # 默认启用
+$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # 可选实验能力
+```
+
+运行固定的 24 项质量集时，先启动本地 API，再传入普通文库和可选空文库 ID：
+
+```powershell
+$env:PYTHONPATH = "src"
+python .\scripts\evaluate_research_answers.py `
+  --library-id <library-id> `
+  --empty-library-id <empty-library-id> `
+  --output .\research-quality-results.json
+```
+
+评测记录引用 ID 有效率、子问题覆盖率、可见空结果、耗时、模型步骤和工具调用。真实模型评测会
+产生 API 请求和费用，不会在普通 CI 中自动运行。完整设计与实施状态见
+[多轮研究编排器方案](docs/research-orchestrator-plan.md)。
 
 ## 首次配置
 
