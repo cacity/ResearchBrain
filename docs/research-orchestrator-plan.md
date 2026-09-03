@@ -1,5 +1,9 @@
 # ResearchBrain 多轮研究编排器实施方案
 
+> 本文档记录架构设计和阶段交付，不再作为逐项完成状态的依据。当前真实完成状态、缺失能力和
+> 验收条件见 [研究 Agent 实施清单](research-agent-implementation-checklist.md)。只有清单中已通过
+> 实际运行路径和测试验证的条目才标记为完成。
+
 ## 1. 目标
 
 在保留现有文献库、Zotero 同步、DOI/PDF 获取、MinerU/PyMuPDF 解析、MiniMax 向量检索、

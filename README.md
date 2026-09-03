@@ -141,6 +141,8 @@ python .\scripts\evaluate_research_answers.py `
 产生 API 请求和费用，不会在普通 CI 中自动运行。完整设计与实施状态见
 [多轮研究编排器方案](docs/research-orchestrator-plan.md)。
 与 Pi Agent Harness 的逐项对应关系见 [Pi 模式采用说明](docs/pi-patterns.md)。
+后续增强项的真实完成状态和验收条件，以
+[研究 Agent 实施清单](docs/research-agent-implementation-checklist.md)为准。
 
 ## 首次配置
 

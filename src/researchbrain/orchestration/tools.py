@@ -25,6 +25,9 @@ class LocalSearchArguments(BaseModel):
 class OnlineSearchArguments(BaseModel):
     query: str
     limit: int
+    sources: list[str] = []
+    query_id: str = ""
+    subquestion_id: str = ""
 
 
 @dataclass(frozen=True)

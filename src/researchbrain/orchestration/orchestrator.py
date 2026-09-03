@@ -27,9 +27,12 @@ from researchbrain.orchestration.models import (
     EvidenceRelevanceJudgment,
     EvidenceScreeningResult,
     GapAssessment,
+    QuerySpec,
     ResearchBudgets,
+    ResearchIntent,
     ResearchPlan,
     ResearchSubquestion,
+    ResearchTimeRange,
     ReviewResult,
     ScoutFinding,
 )
@@ -46,8 +49,23 @@ EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 SteeringSource = Callable[[], Awaitable[list[dict[str, str]]]]
 AcquisitionSource = Callable[[], Awaitable[dict[str, Any] | None]]
 
+INTAKE_PROMPT = """You are the intake stage of an evidence-grounded literature research system.
+Convert the user's request into a structured research intent. Preserve every explicit date, geography,
+language, inclusion, exclusion, data, and output requirement. Separate the scientific domain, research
+objects, and methods so homonyms from another discipline cannot enter later retrieval. Split must_answer
+into concise requirements without answering them. Record assumptions and ambiguities. Set
+clarification_required only when an ambiguity would materially change the search scope or deliverable.
+The supplied deterministic_intent contains hard constraints extracted from the user's exact words; never
+remove or weaken them. Prior conversation is context only and is not evidence. Return structured JSON only."""
+
 PLANNER_PROMPT = """You are the planning stage of an evidence-grounded literature research system.
-Decompose the task into answerable subquestions and produce concise multilingual academic queries.
+Decompose the supplied research_intent into answerable typed subquestions and structured QuerySpec records.
+Every must_answer requirement must map to a subquestion. Keep subquestions inside the stated domain, object,
+method, date, geography, inclusion, and exclusion boundaries. Add priority, dependencies, and explicit
+completion criteria. Produce at least a Chinese local query, an English core query, and an English synonym
+query for every subquestion. Use source-specific records for Crossref, OpenAlex, arXiv, and PubMed when their
+syntax or disciplinary coverage is useful; otherwise use all_online. Do not send an irrelevant domain to
+PubMed merely to fill a slot.
 Provide topic_terms containing discriminative Chinese and English terms that must occur in same-topic
 evidence. Provide excluded_terms for likely homonyms or cross-domain meanings that must not be admitted
 unless a topic term also occurs. Do not use generic terms such as data, analysis, method, processing,
@@ -126,6 +144,7 @@ class ResearchOrchestrator:
         self.steering: list[dict[str, str]] = []
         self.scout_findings: list[ScoutFinding] = []
         self.scout_rounds = 0
+        self.query_diagnostics: dict[str, dict[str, Any]] = {}
         self.tools = ResearchToolRegistry(
             signal=self.signal,
             event_sink=self._emit,
@@ -176,22 +195,40 @@ class ResearchOrchestrator:
                 "prior_answers_are_evidence": False,
             },
         )
-        await self._complete("intake", {"mode": mode, "history_messages": len(history)})
+        research_intent = await self._understand(question, history, memory)
+        await self._emit("intent_ready", {"research_intent": research_intent.model_dump()})
+        await self._complete(
+            "intake",
+            {
+                "mode": mode,
+                "history_messages": len(history),
+                "research_intent": research_intent.model_dump(),
+            },
+        )
 
         await self._enter("planning", "正在拆分研究问题")
-        plan = await self._plan(question, history, memory)
+        plan = await self._plan(question, history, memory, research_intent)
         await self._emit(
             "plan_ready",
             {
+                "research_intent": research_intent.model_dump(),
                 "subquestions": [value.model_dump() for value in plan.subquestions],
                 "queries": plan.queries,
+                "query_specs": [value.model_dump() for value in plan.query_specs],
                 "topic_terms": plan.topic_terms,
                 "excluded_terms": plan.excluded_terms,
             },
         )
-        await self._complete("planning", {"subquestions": len(plan.subquestions), "queries": plan.queries})
+        await self._complete(
+            "planning",
+            {
+                "subquestions": len(plan.subquestions),
+                "queries": plan.queries,
+                "query_specs": [value.model_dump() for value in plan.query_specs],
+            },
+        )
 
-        query_queue = _unique_queries([question, *plan.queries], self.budgets.max_queries)
+        query_queue = _local_query_specs(plan, self.budgets.max_queries)
         local_rounds = 0
         coverage: list[CoverageItem] = []
 
@@ -199,12 +236,17 @@ class ResearchOrchestrator:
             while query_queue and local_rounds < self.budgets.max_local_rounds:
                 await self._enter("local_search", "正在检索本地文库")
                 local_rounds += 1
-                round_queries = query_queue[: self.budgets.max_queries]
+                round_specs = query_queue[: self.budgets.max_queries]
                 query_queue = []
-                await self._search_local(library_id, round_queries, ledger)
+                await self._search_local(library_id, round_specs, ledger)
                 await self._complete(
                     "local_search",
-                    {"round": local_rounds, "queries": round_queries, "evidence": len(ledger.entries())},
+                    {
+                        "round": local_rounds,
+                        "queries": [value.query for value in round_specs],
+                        "query_ids": [value.id for value in round_specs],
+                        "evidence": len(ledger.entries()),
+                    },
                 )
 
                 await self._enter("evidence_inspection", "正在整理本地证据")
@@ -223,22 +265,34 @@ class ResearchOrchestrator:
                 )
                 if assessment.next_action != "local_search":
                     break
-                query_queue = _unique_queries(assessment.additional_queries, self.budgets.max_queries)
+                query_queue = _runtime_query_specs(
+                    assessment.additional_queries,
+                    plan,
+                    source="local",
+                    limit=self.budgets.max_queries,
+                )
                 if not query_queue:
                     break
 
         should_search_online = mode == "online" or (
             mode == "hybrid" and (not coverage or any(value.status != "covered" for value in coverage))
         )
+        online_specs: list[QuerySpec] = []
         online_queries: list[str] = []
         if should_search_online:
             await self._enter("online_search", "正在补充在线学术来源")
-            online_queries = _online_queries(plan, coverage, question, self.budgets.max_queries)
-            statuses = await self._search_online(online_queries, ledger, evidence_limit)
+            online_specs = _online_query_specs(plan, coverage, question, self.budgets.max_queries)
+            online_queries = [value.query for value in online_specs]
+            statuses = await self._search_online(online_specs, ledger, evidence_limit)
             await self._screen_evidence(question, plan, ledger)
             await self._complete(
                 "online_search",
-                {"queries": online_queries, "evidence": len(ledger.entries()), "providers": len(statuses)},
+                {
+                    "queries": online_queries,
+                    "query_ids": [value.id for value in online_specs],
+                    "evidence": len(ledger.entries()),
+                    "providers": len(statuses),
+                },
             )
             await self._enter("gap_assessment", "正在复核全部证据")
             assessment = await self._assess(plan, ledger, mode, allow_local=False)
@@ -370,14 +424,44 @@ class ResearchOrchestrator:
             ledger.evidence(max(evidence_limit, 40), include_excluded=True),
         )
 
+    async def _understand(
+        self,
+        question: str,
+        history: list[ConversationTurn],
+        session_memory: dict[str, Any],
+    ) -> ResearchIntent:
+        current_year = date.today().year
+        deterministic = _extract_explicit_intent(question, current_year)
+        payload = {
+            "question": question,
+            "current_date": date.today().isoformat(),
+            "deterministic_intent": deterministic.model_dump(),
+            "recent_user_context": [value.content for value in history if value.role == "user"][-3:],
+            "session_memory": session_memory,
+        }
+        try:
+            generated = await self._generate(
+                "intake", INTAKE_PROMPT, json.dumps(payload, ensure_ascii=False), ResearchIntent
+            )
+        except GenerationError as exc:
+            self.limitations.append(f"研究意图模型降级：{exc}")
+            generated = deterministic
+        return _validate_research_intent(
+            _merge_research_intent(deterministic, generated),
+            question,
+            current_year,
+        )
+
     async def _plan(
         self,
         question: str,
         history: list[ConversationTurn],
         session_memory: dict[str, Any],
+        research_intent: ResearchIntent,
     ) -> ResearchPlan:
         context = {
             "question": question,
+            "research_intent": research_intent.model_dump(),
             "current_date": date.today().isoformat(),
             "recent_user_context": [value.content for value in history if value.role == "user"][-3:],
             "session_memory": session_memory,
@@ -393,47 +477,71 @@ class ResearchOrchestrator:
         except GenerationError as exc:
             self.limitations.append(f"研究计划模型降级：{exc}")
             plan = _fallback_plan(question, self.budgets.max_subquestions, self.budgets.max_queries)
+        subquestions = _normalize_subquestions(
+            plan.subquestions,
+            research_intent,
+            self.budgets.max_subquestions,
+        )
+        plan = plan.model_copy(update={"research_intent": research_intent, "subquestions": subquestions})
+        query_specs = _normalize_query_specs(plan, research_intent)
+        local_queries = [value.query for value in query_specs if value.source == "local"]
         return plan.model_copy(
             update={
-                "subquestions": plan.subquestions[: self.budgets.max_subquestions],
-                "queries": _unique_queries(plan.queries, self.budgets.max_queries) or [question],
+                "queries": _unique_queries(
+                    [*local_queries, *plan.queries], self.budgets.max_queries
+                )
+                or [research_intent.normalized_question],
+                "query_specs": query_specs,
                 "topic_terms": _topic_contract_terms(question, plan)[:20],
-                "excluded_terms": _topic_contract_exclusions(question, plan)[:20],
+                "excluded_terms": _distinct_terms(
+                    [
+                        *_topic_contract_exclusions(question, plan),
+                        *research_intent.must_exclude,
+                    ]
+                )[:20],
             }
         )
 
     async def _search_local(
         self,
         library_id: str,
-        queries: list[str],
+        specs: list[QuerySpec],
         ledger: EvidenceLedger,
     ) -> None:
+        queries = [value.query for value in specs]
         await self._emit("tool_started", {"tool": "search_library", "queries": queries})
         results = await self.tools.execute_many(
             "search_library",
             [
                 {
                     "library_id": library_id,
-                    "query": query,
+                    "query": spec.query,
                     "limit": self.budgets.per_query_limit,
                 }
-                for query in queries
+                for spec in specs
             ],
             parallel=self.budgets.parallel_scouts,
         )
         self.tool_calls = self.tools.call_count
-        for result in results:
+        for spec, result in zip(specs, results, strict=True):
             self.signal.raise_if_cancelled()
             if not result.succeeded:
                 self.limitations.append(f"一个本地检索式执行失败：{result.error}")
+                await self._record_query_diagnostic(spec, status="failed", error=result.error)
                 continue
             query, hits = result.value
-            ledger.add_local(query, hits)
+            added = ledger.add_local(query, hits)
+            await self._record_query_diagnostic(
+                spec,
+                status="complete",
+                result_count=len(hits),
+                added_count=added,
+            )
         await self._emit("tool_completed", {"tool": "search_library", "evidence": len(ledger.entries())})
 
     async def _search_online(
         self,
-        queries: list[str],
+        specs: list[QuerySpec],
         ledger: EvidenceLedger,
         evidence_limit: int,
     ) -> list[ProviderStatus]:
@@ -441,27 +549,45 @@ class ResearchOrchestrator:
             self.limitations.append("在线搜索未配置")
             return []
         statuses: list[ProviderStatus] = []
+        queries = [value.query for value in specs]
         await self._emit("tool_started", {"tool": "search_online", "queries": queries})
-        runnable_queries: list[str] = []
-        for query in queries:
+        runnable_specs: list[QuerySpec] = []
+        for spec in specs:
             if self._timed_out():
                 self.limitations.append("达到研究时间预算，停止继续联网检索")
                 break
-            runnable_queries.append(query)
+            runnable_specs.append(spec)
         results = await self.tools.execute_many(
             "search_online",
-            [{"query": query, "limit": max(3, min(evidence_limit, 10))} for query in runnable_queries],
+            [
+                {
+                    "query": spec.query,
+                    "limit": max(3, min(evidence_limit, 10)),
+                    "sources": _query_spec_sources(spec),
+                    "query_id": spec.id,
+                    "subquestion_id": spec.subquestion_id,
+                }
+                for spec in runnable_specs
+            ],
             parallel=self.budgets.parallel_scouts,
         )
         self.tool_calls = self.tools.call_count
-        for result in results:
+        for spec, result in zip(runnable_specs, results, strict=True):
             self.signal.raise_if_cancelled()
             if not result.succeeded:
                 self.limitations.append(f"一个在线检索式执行失败：{result.error}")
+                await self._record_query_diagnostic(spec, status="failed", error=result.error)
                 continue
             query, discovery_result = result.value
-            ledger.add_online(query, discovery_result.records)
+            added = ledger.add_online(query, discovery_result.records)
             statuses.extend(discovery_result.providers)
+            await self._record_query_diagnostic(
+                spec,
+                status="complete",
+                result_count=len(discovery_result.records),
+                added_count=added,
+                providers=[value.source for value in discovery_result.providers],
+            )
         await self._emit("tool_completed", {"tool": "search_online", "evidence": len(ledger.entries())})
         return statuses
 
@@ -476,8 +602,38 @@ class ResearchOrchestrator:
     async def _tool_search_online(self, arguments: OnlineSearchArguments):
         if not self.discovery:
             raise GenerationError("online_search_unavailable", "Online search is not configured")
-        result = await self.discovery.search_with_status(arguments.query, arguments.limit)
+        result = await self.discovery.search_with_status(
+            arguments.query,
+            arguments.limit,
+            arguments.sources,
+        )
         return arguments.query, result
+
+    async def _record_query_diagnostic(
+        self,
+        spec: QuerySpec,
+        *,
+        status: str,
+        result_count: int = 0,
+        added_count: int = 0,
+        providers: list[str] | None = None,
+        error: str = "",
+    ) -> None:
+        diagnostic = {
+            "query_id": spec.id,
+            "subquestion_id": spec.subquestion_id,
+            "language": spec.language,
+            "source": spec.source,
+            "query": spec.query,
+            "status": status,
+            "result_count": result_count,
+            "added_count": added_count,
+            "duplicate_count": max(0, result_count - added_count),
+            "providers": providers or [],
+            "error": error,
+        }
+        self.query_diagnostics[spec.id] = diagnostic
+        await self._emit("query_diagnostic", diagnostic)
 
     async def _screen_evidence(
         self,
