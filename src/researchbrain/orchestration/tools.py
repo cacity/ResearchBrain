@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from researchbrain.agent.deepseek import GenerationError
 from researchbrain.agent.gateway import CancellationSignal
@@ -20,14 +20,18 @@ class LocalSearchArguments(BaseModel):
     library_id: str
     query: str
     limit: int
+    required_terms: list[str] = Field(default_factory=list)
+    excluded_terms: list[str] = Field(default_factory=list)
 
 
 class OnlineSearchArguments(BaseModel):
     query: str
     limit: int
-    sources: list[str] = []
+    sources: list[str] = Field(default_factory=list)
     query_id: str = ""
     subquestion_id: str = ""
+    start_year: int | None = None
+    end_year: int | None = None
 
 
 @dataclass(frozen=True)

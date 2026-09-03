@@ -21,6 +21,12 @@ from researchbrain.agent.service import (
 from researchbrain.discovery.service import LiteratureDiscovery, ProviderStatus
 from researchbrain.orchestration.context import transform_context
 from researchbrain.orchestration.evidence import EvidenceLedger
+from researchbrain.orchestration.intent import (
+    TopicValidator,
+    extract_explicit_intent,
+    merge_research_intent,
+    validate_research_intent,
+)
 from researchbrain.orchestration.models import (
     CoverageItem,
     DraftAnswer,
@@ -32,9 +38,17 @@ from researchbrain.orchestration.models import (
     ResearchIntent,
     ResearchPlan,
     ResearchSubquestion,
-    ResearchTimeRange,
     ReviewResult,
     ScoutFinding,
+)
+from researchbrain.orchestration.queries import (
+    local_query_specs,
+    normalize_query_specs,
+    normalize_subquestions,
+    online_query_specs,
+    query_spec_sources,
+    rewrite_local_query_specs,
+    runtime_query_specs,
 )
 from researchbrain.orchestration.state_machine import ResearchStateMachine
 from researchbrain.orchestration.tools import (
@@ -228,8 +242,9 @@ class ResearchOrchestrator:
             },
         )
 
-        query_queue = _local_query_specs(plan, self.budgets.max_queries)
+        query_queue = local_query_specs(plan, self.budgets.max_queries)
         local_rounds = 0
+        no_gain_rounds = 0
         coverage: list[CoverageItem] = []
 
         if mode != "online":
@@ -251,6 +266,11 @@ class ResearchOrchestrator:
 
                 await self._enter("evidence_inspection", "正在整理本地证据")
                 await self._screen_evidence(question, plan, ledger)
+                round_relevant = sum(
+                    int(self.query_diagnostics.get(value.id, {}).get("relevant_count") or 0)
+                    for value in round_specs
+                )
+                no_gain_rounds = no_gain_rounds + 1 if round_relevant == 0 else 0
                 await self._emit_evidence_summary(ledger)
                 await self._run_scouts(plan, ledger)
                 await self._complete("evidence_inspection", {"evidence": len(ledger.entries())})
@@ -263,14 +283,42 @@ class ResearchOrchestrator:
                     "gap_assessment",
                     {"next_action": assessment.next_action, "rationale": assessment.rationale},
                 )
-                if assessment.next_action != "local_search":
+                if no_gain_rounds >= 2:
+                    self.limitations.append("连续两轮本地检索没有新增相关证据，停止继续改写查询。")
                     break
-                query_queue = _runtime_query_specs(
-                    assessment.additional_queries,
+                rewritten = rewrite_local_query_specs(
+                    round_specs,
+                    self.query_diagnostics,
                     plan,
-                    source="local",
-                    limit=self.budgets.max_queries,
+                    self.budgets.max_queries,
                 )
+                model_queries = (
+                    runtime_query_specs(
+                        assessment.additional_queries,
+                        plan,
+                        source="local",
+                        limit=self.budgets.max_queries,
+                    )
+                    if assessment.next_action == "local_search"
+                    else []
+                )
+                has_gap = any(value.status != "covered" for value in coverage)
+                if assessment.next_action != "local_search" and not (rewritten and has_gap):
+                    break
+                combined = list({value.query: value for value in [*model_queries, *rewritten]}.values())[
+                    : self.budgets.max_queries
+                ]
+                first_runtime_id = (
+                    max(
+                        (int(value.id[1:]) for value in plan.query_specs if value.id[1:].isdigit()),
+                        default=0,
+                    )
+                    + 1
+                )
+                query_queue = [
+                    value.model_copy(update={"id": f"S{first_runtime_id + index}"})
+                    for index, value in enumerate(combined)
+                ]
                 if not query_queue:
                     break
 
@@ -281,7 +329,7 @@ class ResearchOrchestrator:
         online_queries: list[str] = []
         if should_search_online:
             await self._enter("online_search", "正在补充在线学术来源")
-            online_specs = _online_query_specs(plan, coverage, question, self.budgets.max_queries)
+            online_specs = online_query_specs(plan, coverage, question, self.budgets.max_queries)
             online_queries = [value.query for value in online_specs]
             statuses = await self._search_online(online_specs, ledger, evidence_limit)
             await self._screen_evidence(question, plan, ledger)
@@ -431,7 +479,7 @@ class ResearchOrchestrator:
         session_memory: dict[str, Any],
     ) -> ResearchIntent:
         current_year = date.today().year
-        deterministic = _extract_explicit_intent(question, current_year)
+        deterministic = extract_explicit_intent(question, current_year)
         payload = {
             "question": question,
             "current_date": date.today().isoformat(),
@@ -446,8 +494,8 @@ class ResearchOrchestrator:
         except GenerationError as exc:
             self.limitations.append(f"研究意图模型降级：{exc}")
             generated = deterministic
-        return _validate_research_intent(
-            _merge_research_intent(deterministic, generated),
+        return validate_research_intent(
+            merge_research_intent(deterministic, generated),
             question,
             current_year,
         )
@@ -477,28 +525,24 @@ class ResearchOrchestrator:
         except GenerationError as exc:
             self.limitations.append(f"研究计划模型降级：{exc}")
             plan = _fallback_plan(question, self.budgets.max_subquestions, self.budgets.max_queries)
-        subquestions = _normalize_subquestions(
+        subquestions = normalize_subquestions(
             plan.subquestions,
             research_intent,
             self.budgets.max_subquestions,
         )
         plan = plan.model_copy(update={"research_intent": research_intent, "subquestions": subquestions})
-        query_specs = _normalize_query_specs(plan, research_intent)
+        topic_terms = _topic_contract_terms(question, plan)[:20]
+        excluded_terms = _distinct_terms(
+            [*_topic_contract_exclusions(question, plan), *research_intent.must_exclude]
+        )[:20]
+        plan = plan.model_copy(update={"topic_terms": topic_terms, "excluded_terms": excluded_terms})
+        query_specs = normalize_query_specs(plan, research_intent)
         local_queries = [value.query for value in query_specs if value.source == "local"]
         return plan.model_copy(
             update={
-                "queries": _unique_queries(
-                    [*local_queries, *plan.queries], self.budgets.max_queries
-                )
+                "queries": _unique_queries([*local_queries, *plan.queries], self.budgets.max_queries)
                 or [research_intent.normalized_question],
                 "query_specs": query_specs,
-                "topic_terms": _topic_contract_terms(question, plan)[:20],
-                "excluded_terms": _distinct_terms(
-                    [
-                        *_topic_contract_exclusions(question, plan),
-                        *research_intent.must_exclude,
-                    ]
-                )[:20],
             }
         )
 
@@ -508,6 +552,7 @@ class ResearchOrchestrator:
         specs: list[QuerySpec],
         ledger: EvidenceLedger,
     ) -> None:
+        self._assign_unused_query_ids(specs)
         queries = [value.query for value in specs]
         await self._emit("tool_started", {"tool": "search_library", "queries": queries})
         results = await self.tools.execute_many(
@@ -517,6 +562,8 @@ class ResearchOrchestrator:
                     "library_id": library_id,
                     "query": spec.query,
                     "limit": self.budgets.per_query_limit,
+                    "required_terms": spec.concepts,
+                    "excluded_terms": spec.excluded_terms,
                 }
                 for spec in specs
             ],
@@ -536,6 +583,7 @@ class ResearchOrchestrator:
                 status="complete",
                 result_count=len(hits),
                 added_count=added,
+                scores=[value.score for value in hits],
             )
         await self._emit("tool_completed", {"tool": "search_library", "evidence": len(ledger.entries())})
 
@@ -549,6 +597,7 @@ class ResearchOrchestrator:
             self.limitations.append("在线搜索未配置")
             return []
         statuses: list[ProviderStatus] = []
+        self._assign_unused_query_ids(specs)
         queries = [value.query for value in specs]
         await self._emit("tool_started", {"tool": "search_online", "queries": queries})
         runnable_specs: list[QuerySpec] = []
@@ -563,9 +612,11 @@ class ResearchOrchestrator:
                 {
                     "query": spec.query,
                     "limit": max(3, min(evidence_limit, 10)),
-                    "sources": _query_spec_sources(spec),
+                    "sources": query_spec_sources(spec),
                     "query_id": spec.id,
                     "subquestion_id": spec.subquestion_id,
+                    "start_year": spec.start_year,
+                    "end_year": spec.end_year,
                 }
                 for spec in runnable_specs
             ],
@@ -606,8 +657,21 @@ class ResearchOrchestrator:
             arguments.query,
             arguments.limit,
             arguments.sources,
+            arguments.start_year,
+            arguments.end_year,
         )
         return arguments.query, result
+
+    def _assign_unused_query_ids(self, specs: list[QuerySpec]) -> None:
+        used = set(self.query_diagnostics)
+        numbers = [int(value[1:]) for value in used if value[1:].isdigit()]
+        next_number = max(numbers, default=0) + 1
+        for index, spec in enumerate(specs):
+            if spec.id in used:
+                spec = spec.model_copy(update={"id": f"S{next_number}"})
+                specs[index] = spec
+                next_number += 1
+            used.add(spec.id)
 
     async def _record_query_diagnostic(
         self,
@@ -618,22 +682,55 @@ class ResearchOrchestrator:
         added_count: int = 0,
         providers: list[str] | None = None,
         error: str = "",
+        scores: list[float] | None = None,
     ) -> None:
+        score_values = scores or []
         diagnostic = {
             "query_id": spec.id,
             "subquestion_id": spec.subquestion_id,
             "language": spec.language,
             "source": spec.source,
             "query": spec.query,
+            "rationale": spec.rationale,
             "status": status,
             "result_count": result_count,
             "added_count": added_count,
             "duplicate_count": max(0, result_count - added_count),
+            "relevant_count": 0,
+            "adjacent_count": 0,
+            "irrelevant_count": 0,
+            "score_distribution": (
+                {
+                    "min": round(min(score_values), 6),
+                    "max": round(max(score_values), 6),
+                    "mean": round(sum(score_values) / len(score_values), 6),
+                }
+                if score_values
+                else {}
+            ),
             "providers": providers or [],
             "error": error,
         }
         self.query_diagnostics[spec.id] = diagnostic
         await self._emit("query_diagnostic", diagnostic)
+
+    async def _update_query_diagnostics(self, ledger: EvidenceLedger) -> None:
+        metrics = ledger.query_metrics()
+        for query_id, diagnostic in self.query_diagnostics.items():
+            query_metrics = metrics.get(str(diagnostic["query"]), {})
+            if not query_metrics:
+                continue
+            updated = {
+                **diagnostic,
+                "relevant_count": query_metrics.get("relevant_count", 0),
+                "adjacent_count": query_metrics.get("adjacent_count", 0),
+                "irrelevant_count": query_metrics.get("irrelevant_count", 0),
+                "score_distribution": query_metrics.get(
+                    "score_distribution", diagnostic["score_distribution"]
+                ),
+            }
+            self.query_diagnostics[query_id] = updated
+            await self._emit("query_diagnostic", updated)
 
     async def _screen_evidence(
         self,
@@ -647,6 +744,7 @@ class ResearchOrchestrator:
         await self._emit("evidence_screening_started", {"count": len(candidates)})
         payload = {
             "intent": plan.intent,
+            "research_intent": plan.research_intent.model_dump() if plan.research_intent else None,
             "question": question,
             "subquestions": [value.model_dump() for value in plan.subquestions],
             "evidence": candidates,
@@ -678,6 +776,7 @@ class ResearchOrchestrator:
             judgment = _enforce_evidence_topic_contract(entry, judgment, question, plan)
             judgments.append(judgment)
         ledger.apply_screening(judgments)
+        await self._update_query_diagnostics(ledger)
         await self._emit(
             "evidence_screened",
             {
@@ -736,7 +835,9 @@ class ResearchOrchestrator:
                 next_action="online_search" if mode != "local" else "synthesize",
                 rationale="Coverage assessor unavailable; used deterministic fallback.",
             )
-        allowed = {entry.evidence.id for entry in ledger.entries()}
+        entries = ledger.entries()
+        allowed = {entry.evidence.id for entry in entries}
+        levels = {entry.evidence.id: entry.level for entry in entries}
         normalized: list[CoverageItem] = []
         by_id = {value.id: value for value in plan.subquestions}
         for item in result.coverage:
@@ -744,9 +845,14 @@ class ResearchOrchestrator:
             if not source:
                 continue
             ids = [value for value in item.evidence_ids if value in allowed]
+            sufficient_ids = [
+                value for value in ids if _evidence_level_meets(levels[value], source.required_level)
+            ]
             status = item.status
-            if status == "covered" and not ids:
-                status = "insufficient_evidence"
+            missing = list(item.missing)
+            if status == "covered" and not sufficient_ids:
+                status = "partial" if ids else "insufficient_evidence"
+                missing.append(f"现有证据未达到最低等级 {source.required_level}")
             normalized.append(
                 item.model_copy(
                     update={
@@ -754,6 +860,7 @@ class ResearchOrchestrator:
                         "required_level": source.required_level,
                         "evidence_ids": ids,
                         "status": status,
+                        "missing": list(dict.fromkeys(missing)),
                     }
                 )
             )
@@ -786,6 +893,7 @@ class ResearchOrchestrator:
             return deterministic
         payload = {
             "question": question,
+            "research_intent": plan.research_intent.model_dump() if plan.research_intent else None,
             "subquestions": [value.model_dump() for value in plan.subquestions],
             "coverage": [value.model_dump() for value in coverage],
             "draft": draft.model_dump(),
@@ -892,7 +1000,18 @@ class ResearchOrchestrator:
                 if status.get("ready"):
                     await self._search_local(
                         library_id,
-                        _unique_queries(queries, self.budgets.max_queries),
+                        runtime_query_specs(
+                            queries,
+                            ResearchPlan(
+                                intent="Acquired full-text follow-up",
+                                subquestions=[
+                                    ResearchSubquestion(id="Q1", question=queries[0] if queries else "全文")
+                                ],
+                                queries=queries or ["全文"],
+                            ),
+                            source="local",
+                            limit=self.budgets.max_queries,
+                        ),
                         ledger,
                     )
                     await self._emit_evidence_summary(ledger)
@@ -963,6 +1082,16 @@ class ResearchOrchestrator:
 
     def _timed_out(self) -> bool:
         return time.monotonic() - self.started_at >= self.budgets.soft_timeout_seconds
+
+
+def _evidence_level_meets(actual: str, required: str) -> bool:
+    order = {
+        "metadata": 0,
+        "structured_abstract": 1,
+        "fulltext_section": 2,
+        "fulltext_page": 3,
+    }
+    return order.get(actual, -1) >= order.get(required, 99)
 
 
 def _unique_queries(values: list[str], limit: int) -> list[str]:
@@ -1106,11 +1235,20 @@ def _distinct_terms(values: list[str]) -> list[str]:
 
 
 def _topic_contract_terms(question: str, plan: ResearchPlan) -> list[str]:
-    return _distinct_terms([*plan.topic_terms, *_fallback_topic_terms(question)])
+    intent_terms: list[str] = []
+    if plan.research_intent:
+        intent_terms = [
+            *plan.research_intent.domains,
+            *plan.research_intent.research_objects,
+            *plan.research_intent.methods,
+            *plan.research_intent.must_include,
+        ]
+    return _distinct_terms([*intent_terms, *plan.topic_terms, *_fallback_topic_terms(question)])
 
 
 def _topic_contract_exclusions(question: str, plan: ResearchPlan) -> list[str]:
-    values = _distinct_terms([*plan.excluded_terms, *_fallback_excluded_terms(question)])
+    intent_exclusions = plan.research_intent.must_exclude if plan.research_intent else []
+    values = _distinct_terms([*intent_exclusions, *plan.excluded_terms, *_fallback_excluded_terms(question)])
     topic_terms = {_normalized_term(value) for value in _topic_contract_terms(question, plan)}
     result: list[str] = []
     for value in values:
@@ -1133,6 +1271,18 @@ def _enforce_evidence_topic_contract(
     if judgment.relevance == "irrelevant":
         return judgment
     evidence_text = f"{entry.get('title', '')}\n{entry.get('excerpt', '')}"
+    if plan.research_intent:
+        validation = TopicValidator(plan.research_intent).validate(evidence_text)
+        if not validation.accepted:
+            return EvidenceRelevanceJudgment(
+                evidence_id=judgment.evidence_id,
+                relevance="irrelevant",
+                subquestion_ids=[],
+                reason=(
+                    f"ResearchIntent 主题校验拒绝：{validation.reason}；命中排除概念 "
+                    + "、".join(validation.excluded_terms[:3])
+                ),
+            )
     topic_terms = _topic_contract_terms(question, plan)
     exclusions = _topic_contract_exclusions(question, plan)
     matched_topics = [value for value in topic_terms if _contains_term(evidence_text, value)]
@@ -1262,7 +1412,8 @@ def _enforce_draft_topic_contract(
     """Remove cross-topic lines even if the generator reintroduces them from model priors."""
     # Final output uses only deterministic conflict families. Model-proposed exclusions
     # remain useful for evidence screening but are not trusted to delete answer text.
-    exclusions = _fallback_excluded_terms(question)
+    intent_exclusions = plan.research_intent.must_exclude if plan.research_intent else []
+    exclusions = _distinct_terms([*_fallback_excluded_terms(question), *intent_exclusions])
     if not exclusions:
         return draft, []
 

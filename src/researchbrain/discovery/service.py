@@ -250,15 +250,11 @@ class LiteratureDiscovery:
         query: str,
         limit_per_source: int = 10,
         sources: list[str] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
     ) -> DiscoverySearchResult:
-        selected = {
-            value.strip().lower()
-            for value in (sources or [])
-            if value and value.strip()
-        }
-        providers = [
-            provider for provider in self.providers if not selected or provider.name in selected
-        ]
+        selected = {value.strip().lower() for value in (sources or []) if value and value.strip()}
+        providers = [provider for provider in self.providers if not selected or provider.name in selected]
 
         async def run(provider: DiscoveryProvider) -> tuple[list[DiscoveryRecord], ProviderStatus]:
             started = time.perf_counter()
@@ -283,8 +279,13 @@ class LiteratureDiscovery:
 
         results = await asyncio.gather(*(run(provider) for provider in providers))
         combined = [record for records, _ in results for record in records]
+        merged = _merge_records(combined)
+        if year_from is not None:
+            merged = [record for record in merged if record.year is not None and record.year >= year_from]
+        if year_to is not None:
+            merged = [record for record in merged if record.year is not None and record.year <= year_to]
         return DiscoverySearchResult(
-            _merge_records(combined),
+            merged,
             [status for _, status in results],
         )
 

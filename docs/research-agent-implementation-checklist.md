@@ -39,19 +39,19 @@
 
 ### 待实现
 
-- [ ] 新增 `ResearchIntent` Schema 和任务类型。
-- [ ] 增加 `domains`、`research_objects` 和 `methods`。
-- [ ] 增加 `data_requirements`，记录数据类型、分辨率和来源要求。
-- [ ] 增加规范化的 `time_range`、`geography` 和语言限制。
-- [ ] 增加 `must_answer`、`must_include`、`must_exclude` 和 `deliverables`。
-- [ ] 增加 `ambiguities`、`assumptions` 和 `clarification_required`。
-- [ ] 用确定性规则先抽取显式年份、地域、范围、格式和排除条件。
-- [ ] Intake 模型只补充隐含意图，不得覆盖显式用户限制。
-- [ ] 新增 Topic Validator，独立校验领域、对象、方法和排除概念。
+- [x] 新增 `ResearchIntent` Schema 和任务类型。
+- [x] 增加 `domains`、`research_objects` 和 `methods`。
+- [x] 增加 `data_requirements`，记录数据类型、分辨率和来源要求。
+- [x] 增加规范化的 `time_range`、`geography` 和语言限制。
+- [x] 增加 `must_answer`、`must_include`、`must_exclude` 和 `deliverables`。
+- [x] 增加 `ambiguities`、`assumptions` 和 `clarification_required`。
+- [x] 用确定性规则先抽取显式年份、地域、范围、格式和排除条件。
+- [x] Intake 模型只补充隐含意图，不得覆盖显式用户限制。
+- [x] 新增 Topic Validator，独立校验领域、对象、方法和排除概念。
 - [ ] 阻塞性歧义进入 `ask_user`，回答后继续同一运行。
-- [ ] ResearchIntent 贯穿 Planner、检索、筛选、Reviewer 和最终门禁。
-- [ ] UI 展示识别出的范围、假设和待确认项。
-- [ ] 增加中英文、多义词、相对日期和复合任务测试。
+- [x] ResearchIntent 贯穿 Planner、检索、筛选、Reviewer 和最终门禁。
+- [x] UI 展示识别出的范围、假设和待确认项。
+- [x] 增加中英文、多义词、相对日期和复合任务测试。
 
 ## 2. 拆分子问题
 
@@ -59,11 +59,11 @@
 - [x] Planner 可拆分最多 10 个子问题。
 - [x] 模型失败时，中文复合问题仍能回退拆分。
 - [x] 覆盖矩阵通过 `Q1`、`Q2` 等 ID 关联证据。
-- [ ] 增加人物/工作、数据、方法、流程、结果、局限、比较、空白等类型。
-- [ ] 增加优先级、依赖关系和单项完成判据。
-- [ ] 确保每个 `must_answer` 至少映射一个子问题。
-- [ ] 合并重复子问题，阻止子问题超出原始意图。
-- [ ] 增加“漏掉用户要求”和“自行扩题”的确定性测试。
+- [x] 增加人物/工作、数据、方法、流程、结果、局限、比较、空白等类型。
+- [x] 增加优先级、依赖关系和单项完成判据。
+- [x] 确保每个 `must_answer` 至少映射一个子问题。
+- [x] 合并重复子问题，阻止子问题超出原始意图。
+- [x] 增加“漏掉用户要求”和“自行扩题”的确定性测试。
 
 ## 3. 中英文及来源专用检索式
 
@@ -76,20 +76,20 @@
 
 ### QuerySpec 改造
 
-- [ ] 新增 `QuerySpec`：ID、子问题 ID、语言、来源和查询文本。
-- [ ] 保存核心概念、同义词、缩写、排除词、日期和生成理由。
-- [ ] 每个子问题至少生成一个中文本地检索式。
+- [x] 新增 `QuerySpec`：ID、子问题 ID、语言、来源和查询文本。
+- [x] 保存核心概念、同义词、缩写、排除词、日期和生成理由。
+- [x] 每个子问题至少生成一个中文本地检索式。
 - [ ] 每个子问题至少生成一个英文核心检索式。
 - [ ] 每个子问题至少生成一个英文同义词/缩写扩展式。
-- [ ] 为 PubMed 生成适用的 MeSH/字段检索式。
-- [ ] 为 arXiv、OpenAlex 和 Crossref 生成来源适配检索式。
-- [ ] 本地查询优先题名、摘要、关键词和全文术语，不直接复用冗长原问题。
-- [ ] 建立受控中英文术语映射并保留原始词。
-- [ ] 记录每条查询的命中、相关、重复和分数分布。
-- [ ] 零命中时扩展同义词，噪声过高时增加领域限定和排除词。
-- [ ] 查询改写受固定轮数限制，连续无收益时停止。
-- [ ] UI 按子问题和来源显示查询及效果。
-- [ ] 增加 Schema、来源适配和查询改写测试。
+- [x] 为 PubMed 生成适用的 MeSH/字段检索式。
+- [x] 为 arXiv、OpenAlex 和 Crossref 生成来源适配检索式。
+- [x] 本地查询优先题名、摘要、关键词和全文术语，不直接复用冗长原问题。
+- [x] 建立受控中英文术语映射并保留原始词。
+- [x] 记录每条查询的命中、相关、重复和分数分布。
+- [x] 零命中时扩展同义词，噪声过高时增加领域限定和排除词。
+- [x] 查询改写受固定轮数限制，连续无收益时停止。
+- [x] UI 按子问题和来源显示查询及效果。
+- [x] 增加 Schema、来源适配和查询改写测试。
 
 ## 4. 多轮本地检索
 
@@ -113,7 +113,7 @@
 - [ ] 增加 `get_item` 工具读取完整题录、标识符、附件和处理状态。
 - [ ] 增加 `read_fulltext_chunks`，按文献、章节、页码和查询读取互补片段。
 - [ ] 关键文献执行多片段阅读，而非只用首次命中的一个片段。
-- [ ] 方法、数值、图、表、公式问题自动提高最低证据等级。
+- [x] 方法、数值、图、表、公式问题自动提高最低证据等级。
 - [ ] 支持图题、表题、公式邻近文本和参考文献段落定向读取。
 - [ ] 记录已读与未读范围，禁止把局部检索称为“读完全文”。
 - [ ] 对扫描 PDF、解析失败和页码缺失给出明确限制。
@@ -125,7 +125,7 @@
 - [x] 覆盖项记录证据等级、证据 ID、缺失内容和下一查询。
 - [x] 每轮本地检索及联网后重新计算覆盖。
 - [x] 混合模式仅在本地覆盖不足时联网。
-- [ ] 确定性检查 covered 项的证据存在且达到最低等级。
+- [x] 确定性检查 covered 项的证据存在且达到最低等级。
 - [ ] 检查覆盖是否只依赖同一文献的重复片段。
 - [ ] 人物、方法比较和结论类问题支持最低文献多样性要求。
 - [ ] 记录每个缺口不能回答的具体原因。
@@ -139,7 +139,7 @@
 - [x] 在线证据进入统一账本并接受主题筛选。
 - [x] Google Scholar 仅浏览器跳转，不自动抓取。
 - [x] 在线 DOI 可经用户批准后导入。
-- [ ] QuerySpec 明确目标来源，不把同一字符串无差别发送给所有来源。
+- [x] QuerySpec 明确目标来源，不把同一字符串无差别发送给所有来源。
 - [ ] 按 DOI、PMID、arXiv ID 和规范化题名生成跨来源合并报告。
 - [ ] 优先保留信息完整、可追溯且有摘要的记录。
 - [ ] 增加种子文献的参考文献和后续引用追踪。
@@ -157,7 +157,7 @@
 - [x] 等待期内完成的全文可回到同一运行证据账本。
 - [x] 超时后可用现有摘要继续并保留任务状态。
 - [ ] 将 `lookup_doi`、`import_dois`、`queue_fulltext`、`job_status`、`parse_pdf`、
-  `embed_document` 注册为 Agent 受控工具。
+      `embed_document` 注册为 Agent 受控工具。
 - [ ] 所有写工具接入审批、文库作用域、幂等键和审计日志。
 - [ ] Agent 根据缺口决定查题录、获取全文或等待解析。
 - [ ] 解析完成后从暂停 action turn 继续，而不是重跑全部只读阶段。
@@ -384,6 +384,45 @@
 - [ ] 生成新 NSIS/MSI 并记录版本、大小和 SHA-256。
 - [ ] 更新 README、架构、Pi 对照、Changelog 和发布说明。
 - [ ] 完成代码审查；质量不达标时继续保留功能分支。
+
+## 实施与验收记录
+
+### 2026-09-03：ResearchIntent、子问题与 QuerySpec 第一批
+
+Checklist items:
+
+- [x] 第 1 节除可恢复 `ask_user` 外的 ResearchIntent 结构化、显式约束、主题校验和 UI 项。
+- [x] 第 2 节的类型、优先级、依赖、完成判据、必答映射、去重和越界阻断项。
+- [x] 第 3 节的 QuerySpec Schema、来源适配、诊断、改写停止和 UI 项；任意术语的纯英文
+      确定性翻译仍未勾选。
+- [x] 第 5 节的最低证据等级自动提升、第 6 节的 covered 等级确定性校验，以及第 7 节的
+      QuerySpec 来源定向。
+
+Implementation:
+
+- `src/researchbrain/orchestration/intent.py`
+- `src/researchbrain/orchestration/queries.py`
+- `src/researchbrain/orchestration/orchestrator.py`
+- `src/researchbrain/orchestration/evidence.py`
+- `src/researchbrain/discovery/service.py`
+- `desktop/src/App.tsx`、`desktop/src/api.ts`
+- `tests/test_research_intent.py`、`tests/test_query_specs.py` 及编排器/来源回归测试
+
+Verification:
+
+- `.venv/Scripts/python.exe -m pytest -p no:cacheprovider`：113 passed。
+- `.venv/Scripts/python.exe -m ruff check --no-cache src tests scripts`：通过。
+- `.venv/Scripts/python.exe -m ruff format --check --no-cache src tests scripts`：通过。
+- `cd desktop && bun run typecheck`：通过。
+- `cd desktop && bun run build`：TypeScript 与 Vite production build 通过。
+- `cd desktop && bunx prettier --check src scripts ../README.md ../README.en.md ../docs ../evaluation ../.github`：通过。
+
+Remaining risks:
+
+- 阻塞性歧义尚未进入可恢复 `ask_user`。
+- 未依赖模型时，只能对受控术语表保证高质量中英互译；任意学科术语的纯英文核心式和同义词式
+  仍保持未完成状态。
+- 下一批应衔接完整题录/全文定向阅读和更严格的覆盖多样性校验。
 
 ## 建议实施顺序
 

@@ -109,10 +109,7 @@ class EvidenceLedger:
         return screened
 
     def evidence(self, limit: int = 40, *, include_excluded: bool = False) -> list[Evidence]:
-        return [
-            entry.evidence
-            for entry in self.entries(limit, include_excluded=include_excluded)
-        ]
+        return [entry.evidence for entry in self.entries(limit, include_excluded=include_excluded)]
 
     def summary(self, limit: int = 40, *, include_excluded: bool = False) -> list[dict]:
         return [
@@ -135,10 +132,7 @@ class EvidenceLedger:
         ]
 
     def apply_screening(self, judgments: list[EvidenceRelevanceJudgment]) -> None:
-        by_id = {
-            entry.evidence.id: entry.fingerprint
-            for entry in self.entries(include_excluded=True)
-        }
+        by_id = {entry.evidence.id: entry.fingerprint for entry in self.entries(include_excluded=True)}
         for judgment in judgments:
             fingerprint = by_id.get(judgment.evidence_id)
             if fingerprint:
@@ -158,6 +152,40 @@ class EvidenceLedger:
             if judgment and subquestion_id in judgment.subquestion_ids:
                 values.append(entry.evidence.id)
         return values
+
+    def query_metrics(self) -> dict[str, dict[str, object]]:
+        """Summarize selected ledger entries by originating query after topic screening."""
+        metrics: dict[str, dict[str, object]] = {}
+        for entry in self.entries(include_excluded=True):
+            value = metrics.setdefault(
+                entry.query,
+                {
+                    "selected_count": 0,
+                    "relevant_count": 0,
+                    "adjacent_count": 0,
+                    "irrelevant_count": 0,
+                    "scores": [],
+                },
+            )
+            value["selected_count"] = int(value["selected_count"]) + 1
+            scores = value["scores"]
+            if isinstance(scores, list):
+                scores.append(entry.evidence.score)
+            judgment = self._screening.get(entry.fingerprint)
+            relevance = judgment.relevance if judgment else "relevant"
+            key = f"{relevance}_count"
+            value[key] = int(value[key]) + 1
+        for value in metrics.values():
+            scores = value.pop("scores")
+            if isinstance(scores, list) and scores:
+                value["score_distribution"] = {
+                    "min": round(min(scores), 6),
+                    "max": round(max(scores), 6),
+                    "mean": round(sum(scores) / len(scores), 6),
+                }
+            else:
+                value["score_distribution"] = {}
+        return metrics
 
 
 def local_evidence_level(hit: SearchHit) -> str:

@@ -23,9 +23,7 @@ def score_research_result(
     insufficient = sum(value.get("status") == "insufficient_evidence" for value in coverage_items)
     denominator = len(coverage_items)
     coverage_ratio = (covered + 0.5 * partial) / denominator if denominator else None
-    topic_violations = [
-        value for value in (forbidden_terms or []) if value.casefold() in answer.casefold()
-    ]
+    topic_violations = [value for value in (forbidden_terms or []) if value.casefold() in answer.casefold()]
     return {
         "citation_id_valid": not invalid_ids,
         "citation_id_valid_ratio": (

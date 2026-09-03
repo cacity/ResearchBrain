@@ -60,7 +60,9 @@ class FixtureGateway:
     async def generate_structured(self, role, _system, user, schema, signal):
         signal.raise_if_cancelled()
         self.roles.append(role)
-        if role == "planner":
+        if role == "intake":
+            payload = json.loads(user)["deterministic_intent"]
+        elif role == "planner":
             payload = {
                 "intent": "Compare the reported storm response",
                 "subquestions": [
@@ -140,7 +142,9 @@ class CrossTopicGateway(FixtureGateway):
     async def generate_structured(self, role, _system, user, schema, signal):
         signal.raise_if_cancelled()
         self.roles.append(role)
-        if role == "planner":
+        if role == "intake":
+            payload = json.loads(user)["deterministic_intent"]
+        elif role == "planner":
             payload = {
                 "intent": "Review spherical harmonic analysis methods",
                 "subquestions": [
@@ -376,8 +380,35 @@ async def test_orchestrator_retrieves_again_when_assessor_reports_a_gap():
     assert result.metrics["local_rounds"] == 2
     assert "independent storm observation" in retrieval.queries
     assert result.coverage[0]["status"] == "covered"
+    assert result.plan["research_intent"]["normalized_question"] == "What happened?"
+    assert result.plan["query_specs"]
+    assert any(event_type == "intent_ready" for event_type, _ in events)
+    diagnostics = [payload for event_type, payload in events if event_type == "query_diagnostic"]
+    assert diagnostics
+    assert diagnostics[-1]["relevant_count"] >= 1
+    assert diagnostics[-1]["score_distribution"]
     assert any(event_type == "coverage_updated" for event_type, _ in events)
     assert events[-1][0] == "result_ready"
+
+
+@pytest.mark.asyncio
+async def test_coverage_cannot_be_covered_by_evidence_below_the_required_level():
+    metadata_hit = hit(
+        "metadata:item-1",
+        page=None,
+        title="Storm response paper",
+        text="Title and bibliographic metadata about storm response only.",
+    )
+
+    result = await ResearchOrchestrator(
+        FixtureRetrieval([[metadata_hit]]),
+        FixtureGateway(),
+        budgets=ResearchBudgets(parallel_scouts=False),
+    ).run("library", "What happened?", mode="local")
+
+    assert result.coverage[0]["status"] == "partial"
+    assert "fulltext_page" in result.coverage[0]["missing"][0]
+    assert any("证据仍不充分" in value for value in result.limitations)
 
 
 @pytest.mark.asyncio
@@ -390,6 +421,23 @@ async def test_orchestrator_rejects_a_citation_outside_the_ledger():
 
     with pytest.raises(GenerationError, match="not supplied"):
         await orchestrator.run("library", "What happened?", mode="local")
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_after_two_query_rewrites_without_relevant_gain():
+    retrieval = FixtureRetrieval([[], [], []])
+    orchestrator = ResearchOrchestrator(
+        retrieval,
+        FixtureGateway(require_second_round=True),
+        budgets=ResearchBudgets(max_local_rounds=3, parallel_scouts=False),
+    )
+
+    with pytest.raises(GenerationError) as caught:
+        await orchestrator.run("library", "What happened?", mode="local")
+
+    assert caught.value.code == "no_evidence"
+    assert orchestrator.gateway.assessments == 2
+    assert any("连续两轮" in value for value in orchestrator.limitations)
 
 
 @pytest.mark.asyncio
