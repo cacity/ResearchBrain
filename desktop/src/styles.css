@@ -908,6 +908,87 @@ button {
   background: #f7f9f8;
   font-size: 9px;
 }
+.research-trace {
+  margin-top: 9px;
+  border-top: 1px solid #dbe3de;
+  padding-top: 8px;
+}
+.research-trace summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: #3d5f4b;
+  font-size: 10px;
+  font-weight: 700;
+  list-style: none;
+}
+.research-trace summary::-webkit-details-marker {
+  display: none;
+}
+.research-trace summary svg {
+  transition: transform 140ms ease;
+}
+.research-trace[open] summary svg {
+  transform: rotate(180deg);
+}
+.research-trace-content {
+  display: grid;
+  gap: 10px;
+  margin-top: 9px;
+  color: #5a685f;
+  font-size: 9px;
+  line-height: 1.55;
+}
+.research-trace-content section {
+  min-width: 0;
+}
+.research-trace-content section > strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #34463a;
+}
+.research-trace-content ol,
+.research-trace-content ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.research-trace-content li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+.research-trace-counts,
+.research-trace-audit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+}
+.research-trace-counts span {
+  color: #52685a;
+}
+.research-trace-terms {
+  display: grid;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.research-trace-terms span:last-child:not(:first-child) {
+  color: #7b5b50;
+}
+.research-trace-rejections {
+  max-height: 96px;
+  margin-top: 5px !important;
+  overflow-y: auto;
+  color: #7b5b50;
+}
+.research-trace-audit {
+  border-top: 1px dashed #d6ded9;
+  padding-top: 7px;
+  color: #475b4e;
+}
+.research-trace-review-issues {
+  flex-basis: 100%;
+  color: #88483e;
+}
 .research-run-error {
   margin: 8px 0 0;
   color: #a43f37;

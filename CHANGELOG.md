@@ -10,6 +10,29 @@ All notable changes to this project are documented in this file. The format is b
 
 - Open-source repository metadata, community files, CI, security policy, and contributor documentation.
 
+## [0.3.1] - 2026-09-02
+
+### Added
+
+- A same-topic evidence admission gate that labels retrieved candidates as relevant, adjacent, or irrelevant
+  before coverage assessment, synthesis, and DOI acquisition.
+- A visible research trace for subquestions, search queries, evidence exclusions, scout activity, and reviewer
+  findings.
+- A validated read-only research tool registry with call budgets, lifecycle events, parallel execution, and
+  normalized tool failures.
+- Conservative abstention and cross-topic regression coverage for cases such as multibeam sonar results being
+  retrieved for spherical harmonic analysis.
+
+### Changed
+
+- DeepSeek structured roles now receive the exact Pydantic JSON Schema instead of relying on generic JSON mode.
+- Planner fallback decomposes broad requests into focused queries, and assessor fallback no longer assigns the
+  first three retrieval results as evidence.
+- Reviewer checks receive evidence excerpts and explicitly block cross-domain citations; parallel scouts are
+  enabled by default with reserved model budget for synthesis and review.
+- Planner output now defines an explicit bilingual topic contract. Deterministic admission and final-answer
+  guards enforce that contract even when the relevance model or synthesizer makes a cross-topic error.
+
 ## [0.3.0] - 2026-09-02
 
 ### Added

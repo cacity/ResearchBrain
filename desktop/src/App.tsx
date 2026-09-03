@@ -59,8 +59,11 @@ import {
   Job,
   Library,
   HarnessStatus,
+  QueryDiagnostic,
+  QuerySpec,
   ResearchApproval,
   ResearchEvent,
+  ResearchIntent,
   ResearchRun,
   SkillRecord,
   ZoteroProbeStatus,
@@ -763,6 +766,29 @@ function ChatView({
   const [runLabel, setRunLabel] = useState("");
   const [runEvidenceCount, setRunEvidenceCount] = useState(0);
   const [runCoverage, setRunCoverage] = useState<Record<string, number>>({});
+  const [runSubquestions, setRunSubquestions] = useState<string[]>([]);
+  const [runQueries, setRunQueries] = useState<string[]>([]);
+  const [runIntent, setRunIntent] = useState<ResearchIntent | null>(null);
+  const [runQuerySpecs, setRunQuerySpecs] = useState<QuerySpec[]>([]);
+  const [runQueryDiagnostics, setRunQueryDiagnostics] = useState<
+    QueryDiagnostic[]
+  >([]);
+  const [runTopicTerms, setRunTopicTerms] = useState<string[]>([]);
+  const [runExcludedTerms, setRunExcludedTerms] = useState<string[]>([]);
+  const [runScreening, setRunScreening] = useState<Record<string, number>>({});
+  const [runRejectedEvidence, setRunRejectedEvidence] = useState<string[]>([]);
+  const [runReview, setRunReview] = useState<{
+    blocking: number;
+    warnings: number;
+  } | null>(null);
+  const [runReviewIssues, setRunReviewIssues] = useState<string[]>([]);
+  const [runScoutCount, setRunScoutCount] = useState(0);
+  const [runToolStats, setRunToolStats] = useState({
+    started: 0,
+    completed: 0,
+    failed: 0,
+  });
+  const [runToolNames, setRunToolNames] = useState<string[]>([]);
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [runError, setRunError] = useState("");
   const [pendingApproval, setPendingApproval] =
@@ -775,6 +801,13 @@ function ChatView({
   );
   const streamController = useRef<AbortController | null>(null);
   const restoreStoredRuns = (runs: ResearchRun[]) => {
+    setRunScreening({});
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
     setRecoverableRun(
       runs.find((run) =>
         ["paused", "failed", "cancelled"].includes(run.status),
@@ -788,6 +821,36 @@ function ChatView({
     );
     setPendingApproval(approval || null);
     setApprovalRunId(approvalRun?.id || "");
+    const latest = runs[0];
+    const plan = latest?.plan as
+      | {
+          research_intent?: ResearchIntent;
+          subquestions?: Array<{ question?: string }>;
+          queries?: string[];
+          query_specs?: QuerySpec[];
+          topic_terms?: string[];
+          excluded_terms?: string[];
+        }
+      | undefined;
+    setRunSubquestions(
+      plan?.subquestions
+        ?.map((value) => String(value.question || "").trim())
+        .filter(Boolean) || [],
+    );
+    setRunQueries(plan?.queries?.map(String).filter(Boolean) || []);
+    setRunIntent(plan?.research_intent || null);
+    setRunQuerySpecs(plan?.query_specs || []);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms(plan?.topic_terms?.map(String).filter(Boolean) || []);
+    setRunExcludedTerms(
+      plan?.excluded_terms?.map(String).filter(Boolean) || [],
+    );
+    const coverageCounts: Record<string, number> = {};
+    for (const value of latest?.coverage || []) {
+      const status = String(value.status || "");
+      if (status) coverageCounts[status] = (coverageCounts[status] || 0) + 1;
+    }
+    setRunCoverage(coverageCounts);
   };
   useEffect(() => {
     let cancelled = false;
@@ -801,6 +864,20 @@ function ChatView({
     setRunLabel("");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
     setStreamedAnswer("");
     setRunError("");
     setPendingApproval(null);
@@ -862,6 +939,22 @@ function ChatView({
     setRecoverableRun(null);
     setPendingApproval(null);
     setApprovalRunId("");
+    setRunEvidenceCount(0);
+    setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
   };
   const selectEvidence = (evidence: ChatEvidence) => {
     setSelectedEvidence(evidence);
@@ -892,6 +985,65 @@ function ChatView({
       setStreamedAnswer("");
       setRunEvidenceCount(0);
       setRunCoverage({});
+      setRunSubquestions([]);
+      setRunQueries([]);
+      setRunIntent(null);
+      setRunQuerySpecs([]);
+      setRunQueryDiagnostics([]);
+      setRunTopicTerms([]);
+      setRunExcludedTerms([]);
+      setRunScreening({});
+      setRunRejectedEvidence([]);
+      setRunReview(null);
+      setRunReviewIssues([]);
+      setRunScoutCount(0);
+      setRunToolStats({ started: 0, completed: 0, failed: 0 });
+      setRunToolNames([]);
+    }
+    if (event.type === "intent_ready" && event.research_intent) {
+      setRunIntent(event.research_intent);
+    }
+    if (event.type === "plan_ready") {
+      setRunSubquestions(
+        event.subquestions?.map((value) => value.question).filter(Boolean) ||
+          [],
+      );
+      setRunQueries(event.queries || []);
+      setRunIntent(event.research_intent || null);
+      setRunQuerySpecs(event.query_specs || []);
+      setRunTopicTerms(event.topic_terms || []);
+      setRunExcludedTerms(event.excluded_terms || []);
+    }
+    if (
+      event.type === "query_diagnostic" &&
+      event.query_id &&
+      event.subquestion_id &&
+      event.language &&
+      event.source &&
+      event.query
+    ) {
+      const diagnostic: QueryDiagnostic = {
+        id: event.query_id,
+        subquestion_id: event.subquestion_id,
+        language: event.language,
+        source: event.source,
+        query: event.query,
+        rationale: event.rationale || "",
+        status: event.status || "",
+        result_count: event.result_count || 0,
+        added_count: event.added_count || 0,
+        duplicate_count: event.duplicate_count || 0,
+        relevant_count: event.relevant_count || 0,
+        adjacent_count: event.adjacent_count || 0,
+        irrelevant_count: event.irrelevant_count || 0,
+        score_distribution: event.score_distribution || {},
+        providers: event.providers || [],
+        error: event.error || "",
+      };
+      setRunQueryDiagnostics((values) => [
+        ...values.filter((value) => value.id !== diagnostic.id),
+        diagnostic,
+      ]);
     }
     if (event.type === "phase_started" && event.label) setRunLabel(event.label);
     if (event.type === "evidence_updated" && typeof event.count === "number") {
@@ -899,6 +1051,47 @@ function ChatView({
     }
     if (event.type === "coverage_updated" && event.counts) {
       setRunCoverage(event.counts);
+    }
+    if (event.type === "evidence_screened" && event.counts) {
+      setRunScreening(event.counts);
+      setRunRejectedEvidence(
+        event.judgments
+          ?.filter((value) => value.relevance !== "relevant")
+          .slice(0, 6)
+          .map(
+            (value) =>
+              `${value.evidence_id} ${value.relevance === "irrelevant" ? "无关" : "相邻"}：${value.reason}`,
+          ) || [],
+      );
+    }
+    if (event.type === "scouts_started" && typeof event.count === "number") {
+      setRunScoutCount(event.count);
+    }
+    if (event.type === "tool_execution_start") {
+      setRunToolStats((value) => ({ ...value, started: value.started + 1 }));
+      if (event.tool) {
+        setRunToolNames((value) =>
+          value.includes(event.tool as string)
+            ? value
+            : [...value, event.tool as string],
+        );
+      }
+    }
+    if (event.type === "tool_execution_end") {
+      setRunToolStats((value) => ({
+        ...value,
+        completed: value.completed + Number(event.status === "completed"),
+        failed: value.failed + Number(event.status === "failed"),
+      }));
+    }
+    if (event.type === "review_ready") {
+      setRunReview({
+        blocking: event.blocking || 0,
+        warnings: event.warnings || 0,
+      });
+      setRunReviewIssues(
+        event.issues?.map((value) => value.reason).filter(Boolean) || [],
+      );
     }
     if (event.type === "answer_delta" && event.delta) {
       setStreamedAnswer((value) => value + event.delta);
@@ -1009,6 +1202,20 @@ function ChatView({
     setRunLabel("正在恢复研究任务");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
     setStreamedAnswer("");
     setRunError("");
     try {
@@ -1035,6 +1242,20 @@ function ChatView({
     setRunLabel("正在创建研究任务");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
     setStreamedAnswer("");
     setRunError("");
     setPendingApproval(null);
@@ -1201,7 +1422,11 @@ function ChatView({
               </button>
             </section>
           )}
-          {(busy || pendingApproval) && (
+          {(busy ||
+            pendingApproval ||
+            runIntent ||
+            runSubquestions.length > 0 ||
+            runQueries.length > 0) && (
             <section className="research-progress" aria-live="polite">
               <div className="research-progress-title">
                 {busy ? (
@@ -1220,6 +1445,172 @@ function ChatView({
                   <span>部分覆盖 {runCoverage.partial || 0}</span>
                   <span>待补充 {runCoverage.insufficient_evidence || 0}</span>
                 </div>
+              )}
+              {(runIntent ||
+                runSubquestions.length > 0 ||
+                runQueries.length > 0 ||
+                runQuerySpecs.length > 0 ||
+                runTopicTerms.length > 0 ||
+                runToolStats.started > 0 ||
+                Object.keys(runScreening).length > 0 ||
+                runReview) && (
+                <details className="research-trace" open={busy}>
+                  <summary>
+                    <ChevronDown size={13} />
+                    研究过程
+                  </summary>
+                  <div className="research-trace-content">
+                    {runIntent && (
+                      <section>
+                        <strong>研究意图与范围</strong>
+                        <div className="research-trace-terms">
+                          <span>任务：{runIntent.task_type}</span>
+                          {(runIntent.domains.length > 0 ||
+                            runIntent.research_objects.length > 0 ||
+                            runIntent.methods.length > 0) && (
+                            <span>
+                              领域/对象/方法：
+                              {[
+                                ...runIntent.domains,
+                                ...runIntent.research_objects,
+                                ...runIntent.methods,
+                              ].join(" · ")}
+                            </span>
+                          )}
+                          {(runIntent.time_range.start_year ||
+                            runIntent.time_range.end_year) && (
+                            <span>
+                              时间：{runIntent.time_range.start_year || "不限"}–
+                              {runIntent.time_range.end_year || "至今"}
+                            </span>
+                          )}
+                          {runIntent.geography.length > 0 && (
+                            <span>地域：{runIntent.geography.join(" · ")}</span>
+                          )}
+                          {runIntent.languages.length > 0 && (
+                            <span>语言：{runIntent.languages.join(" · ")}</span>
+                          )}
+                          {runIntent.assumptions.length > 0 && (
+                            <span>
+                              假设：{runIntent.assumptions.join("；")}
+                            </span>
+                          )}
+                          {runIntent.ambiguities.length > 0 && (
+                            <span>
+                              待确认：{runIntent.ambiguities.join("；")}
+                            </span>
+                          )}
+                        </div>
+                      </section>
+                    )}
+                    {runSubquestions.length > 0 && (
+                      <section>
+                        <strong>问题拆分</strong>
+                        <ol>
+                          {runSubquestions.map((value, index) => (
+                            <li key={`${index}-${value}`}>{value}</li>
+                          ))}
+                        </ol>
+                      </section>
+                    )}
+                    {(runQuerySpecs.length > 0 || runQueries.length > 0) && (
+                      <section>
+                        <strong>按子问题和来源生成的检索式</strong>
+                        <ul>
+                          {runQuerySpecs.length > 0
+                            ? runQuerySpecs.map((value) => (
+                                <li key={value.id}>
+                                  {value.subquestion_id} · {value.source} ·{" "}
+                                  {value.language}：{value.query}
+                                  {value.rationale
+                                    ? `（${value.rationale}）`
+                                    : ""}
+                                </li>
+                              ))
+                            : runQueries.map((value, index) => (
+                                <li key={`${index}-${value}`}>{value}</li>
+                              ))}
+                        </ul>
+                        {runQueryDiagnostics.length > 0 && (
+                          <div className="research-trace-counts">
+                            {runQueryDiagnostics.map((value) => (
+                              <span key={value.id}>
+                                {value.id} 命中 {value.result_count} · 相关{" "}
+                                {value.relevant_count} · 重复{" "}
+                                {value.duplicate_count}
+                                {value.score_distribution.mean !== undefined
+                                  ? ` · 均分 ${value.score_distribution.mean.toFixed(3)}`
+                                  : ""}
+                                {value.error ? ` · ${value.error}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
+                    {runTopicTerms.length > 0 && (
+                      <section>
+                        <strong>主题边界</strong>
+                        <div className="research-trace-terms">
+                          <span>必须相关：{runTopicTerms.join(" · ")}</span>
+                          {runExcludedTerms.length > 0 && (
+                            <span>
+                              跨域排除：{runExcludedTerms.join(" · ")}
+                            </span>
+                          )}
+                        </div>
+                      </section>
+                    )}
+                    {runToolStats.started > 0 && (
+                      <section>
+                        <strong>受控工具循环</strong>
+                        <div className="research-trace-counts">
+                          <span>{runToolNames.join(" · ")}</span>
+                          <span>调用 {runToolStats.started}</span>
+                          <span>完成 {runToolStats.completed}</span>
+                          <span>失败 {runToolStats.failed}</span>
+                        </div>
+                      </section>
+                    )}
+                    {Object.keys(runScreening).length > 0 && (
+                      <section>
+                        <strong>证据筛选</strong>
+                        <div className="research-trace-counts">
+                          <span>采用 {runScreening.relevant || 0}</span>
+                          <span>相邻 {runScreening.adjacent || 0}</span>
+                          <span>排除 {runScreening.irrelevant || 0}</span>
+                        </div>
+                        {runRejectedEvidence.length > 0 && (
+                          <ul className="research-trace-rejections">
+                            {runRejectedEvidence.map((value) => (
+                              <li key={value}>{value}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+                    )}
+                    {(runScoutCount > 0 || runReview) && (
+                      <section className="research-trace-audit">
+                        {runScoutCount > 0 && (
+                          <span>证据侦察 {runScoutCount} 个子问题</span>
+                        )}
+                        {runReview && (
+                          <span>
+                            审查：阻断 {runReview.blocking}，警告{" "}
+                            {runReview.warnings}
+                          </span>
+                        )}
+                        {runReviewIssues.length > 0 && (
+                          <ul className="research-trace-review-issues">
+                            {runReviewIssues.map((value) => (
+                              <li key={value}>{value}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+                    )}
+                  </div>
+                </details>
               )}
               {runError && <p className="research-run-error">{runError}</p>}
               {busy && activeRunId && (

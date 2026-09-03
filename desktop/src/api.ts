@@ -135,6 +135,51 @@ export type ResearchApproval = {
   batch_id?: string;
 };
 
+export type ResearchIntent = {
+  task_type: string;
+  normalized_question: string;
+  domains: string[];
+  research_objects: string[];
+  methods: string[];
+  data_requirements: string[];
+  time_range: {
+    start_year: number | null;
+    end_year: number | null;
+    description: string;
+  };
+  geography: string[];
+  languages: string[];
+  must_answer: string[];
+  must_include: string[];
+  must_exclude: string[];
+  deliverables: string[];
+  ambiguities: string[];
+  assumptions: string[];
+  clarification_required: boolean;
+};
+
+export type QuerySpec = {
+  id: string;
+  subquestion_id: string;
+  language: "zh" | "en" | "mixed";
+  source: string;
+  query: string;
+  rationale: string;
+};
+
+export type QueryDiagnostic = QuerySpec & {
+  status: string;
+  result_count: number;
+  added_count: number;
+  duplicate_count: number;
+  relevant_count: number;
+  adjacent_count: number;
+  irrelevant_count: number;
+  score_distribution: { min?: number; max?: number; mean?: number };
+  providers: string[];
+  error: string;
+};
+
 export type ResearchRun = {
   id: string;
   session_id: string;
@@ -174,12 +219,53 @@ export type ResearchEvent = {
   levels?: Record<string, number>;
   counts?: Record<string, number>;
   coverage?: Array<Record<string, unknown>>;
+  subquestions?: Array<{
+    id: string;
+    question: string;
+    required_level: string;
+  }>;
+  queries?: string[];
+  research_intent?: ResearchIntent;
+  query_specs?: QuerySpec[];
+  query_id?: string;
+  subquestion_id?: string;
+  language?: "zh" | "en" | "mixed";
+  source?: string;
+  query?: string;
+  rationale?: string;
+  result_count?: number;
+  added_count?: number;
+  duplicate_count?: number;
+  relevant_count?: number;
+  adjacent_count?: number;
+  irrelevant_count?: number;
+  score_distribution?: { min?: number; max?: number; mean?: number };
+  providers?: string[];
+  topic_terms?: string[];
+  excluded_terms?: string[];
+  judgments?: Array<{
+    evidence_id: string;
+    relevance: "relevant" | "adjacent" | "irrelevant";
+    reason: string;
+  }>;
+  blocking?: number;
+  warnings?: number;
+  issues?: Array<{
+    type: string;
+    claim: string;
+    citation_ids: string[];
+    reason: string;
+  }>;
   message_id?: string;
   message?: string;
   code?: string;
   approval?: ResearchApproval;
   metrics?: Record<string, unknown>;
   limitations?: string[];
+  call_id?: string;
+  tool?: string;
+  status?: "completed" | "failed";
+  error?: string;
 };
 
 export type Evidence = {
@@ -196,6 +282,8 @@ export type Evidence = {
   source_name: string;
   source_url: string;
   discovery_record: DiscoveryRecord | null;
+  relevance?: "relevant" | "adjacent" | "irrelevant" | "unreviewed";
+  relevance_reason?: string;
 };
 
 export type AttachmentSummary = {

@@ -23,3 +23,15 @@ def test_research_quality_score_accepts_visible_uncited_readiness_response():
 
     assert result["citation_id_valid"] is True
     assert result["has_visible_answer"] is True
+
+
+def test_research_quality_score_detects_cross_topic_terms():
+    result = score_research_result(
+        "错误地混入了多波束数据处理。",
+        [],
+        [],
+        ["多波束", "multibeam"],
+    )
+
+    assert result["topic_relevance"] is False
+    assert result["topic_violations"] == ["多波束"]

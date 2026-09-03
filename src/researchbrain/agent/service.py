@@ -65,6 +65,8 @@ class Evidence:
     source_name: str = "local-library"
     source_url: str = ""
     discovery_record: dict | None = None
+    relevance: str = "unreviewed"
+    relevance_reason: str = ""
 
 
 @dataclass(frozen=True)

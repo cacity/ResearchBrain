@@ -253,6 +253,7 @@ class ResearchRunStore:
                         page_end=evidence.page_end,
                         score=evidence.score,
                         discovery_record=evidence.discovery_record or {},
+                        selected=evidence.relevance in {"relevant", "unreviewed"},
                         cited=evidence.id in cited_ids,
                     )
                 )

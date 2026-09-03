@@ -772,22 +772,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.to_thread(run_store.cancel, run_id)
                 await event_sink("run_cancelled", {"message": "研究任务已停止"})
         except GenerationError as exc:
-            if exc.code == "no_evidence":
+            if exc.code in {"no_evidence", "no_relevant_evidence"}:
                 content = (
                     "当前文库没有可用于回答该问题的题录、摘要或已解析全文。"
                     "请先导入文献，或切换到“本地优先 + 联网”后重试。"
-                    if run.mode == "local"
-                    else "本次没有从当前文库或已启用的在线学术来源检索到可核验证据。"
+                    if exc.code == "no_evidence" and run.mode == "local"
+                    else (
+                        "本次检索到了候选文献，但它们与问题主题不够相关，已被证据门禁排除。"
+                        "系统没有使用这些文献拼接答案；建议切换到“本地优先 + 联网”或补充更明确的研究范围。"
+                        if exc.code == "no_relevant_evidence"
+                        else "本次没有从当前文库或已启用的在线学术来源检索到可核验证据。"
+                    )
                 )
                 answer = AgentAnswer(
                     answer=content,
                     evidence=[],
                     citation_ids=[],
-                    limitations=["没有检索到可用于形成研究结论的证据。"],
+                    limitations=[
+                        "候选证据均未通过主题相关性筛选。"
+                        if exc.code == "no_relevant_evidence"
+                        else "没有检索到可用于形成研究结论的证据。"
+                    ],
                     model="local-readiness-check",
                     plan={},
                     coverage=[],
-                    metrics={"empty_evidence": True},
+                    metrics={
+                        "empty_evidence": exc.code == "no_evidence",
+                        "relevance_rejected": exc.code == "no_relevant_evidence",
+                    },
                 )
                 message = await asyncio.to_thread(run_store.complete, run_id, answer)
                 await event_sink(

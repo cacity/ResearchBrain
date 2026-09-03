@@ -10,6 +10,7 @@ def score_research_result(
     answer: str,
     citations: list[dict[str, Any]],
     coverage: list[dict[str, Any]] | None = None,
+    forbidden_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     """Return deterministic quality signals suitable for V1/V2 regression reports."""
     cited_in_text = list(dict.fromkeys(_CITATION_RE.findall(answer)))
@@ -22,6 +23,7 @@ def score_research_result(
     insufficient = sum(value.get("status") == "insufficient_evidence" for value in coverage_items)
     denominator = len(coverage_items)
     coverage_ratio = (covered + 0.5 * partial) / denominator if denominator else None
+    topic_violations = [value for value in (forbidden_terms or []) if value.casefold() in answer.casefold()]
     return {
         "citation_id_valid": not invalid_ids,
         "citation_id_valid_ratio": (
@@ -37,4 +39,6 @@ def score_research_result(
             "ratio": coverage_ratio,
         },
         "has_visible_answer": bool(answer.strip()),
+        "topic_relevance": not topic_violations,
+        "topic_violations": topic_violations,
     }

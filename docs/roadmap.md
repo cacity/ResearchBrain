@@ -26,6 +26,8 @@ repository is published.
 - User-controlled local, online, and combined research modes.
 - Iterative evidence research, verification, cancellation, and recovery as specified in the
   [research orchestrator implementation plan](research-orchestrator-plan.md).
+- Track intent, query, reviewer, action-loop, recovery, and subagent completion in the
+  [research agent implementation checklist](research-agent-implementation-checklist.md).
 
 ## Later
 

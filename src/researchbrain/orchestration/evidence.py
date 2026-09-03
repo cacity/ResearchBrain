@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from researchbrain.agent.service import Evidence
 from researchbrain.discovery.service import DiscoveryRecord
+from researchbrain.orchestration.models import EvidenceRelevanceJudgment
 from researchbrain.retrieval.index import SearchHit
 
 
@@ -23,6 +24,7 @@ class EvidenceLedger:
         self.max_chunks_per_item = max_chunks_per_item
         self._local: dict[str, tuple[SearchHit, str]] = {}
         self._online: dict[str, tuple[DiscoveryRecord, str]] = {}
+        self._screening: dict[str, EvidenceRelevanceJudgment] = {}
 
     def add_local(self, query: str, hits: list[SearchHit]) -> int:
         added = 0
@@ -44,7 +46,7 @@ class EvidenceLedger:
             added += int(existing is None)
         return added
 
-    def entries(self, limit: int = 40) -> list[LedgerEntry]:
+    def entries(self, limit: int = 40, *, include_excluded: bool = False) -> list[LedgerEntry]:
         local_by_item: dict[str, list[tuple[SearchHit, str]]] = defaultdict(list)
         for hit, query in self._local.values():
             local_by_item[hit.item_id].append((hit, query))
@@ -88,12 +90,28 @@ class EvidenceLedger:
                     query,
                 )
             )
-        return entries
+        screened: list[LedgerEntry] = []
+        for entry in entries:
+            judgment = self._screening.get(entry.fingerprint)
+            if judgment:
+                entry = LedgerEntry(
+                    entry.fingerprint,
+                    replace(
+                        entry.evidence,
+                        relevance=judgment.relevance,
+                        relevance_reason=judgment.reason,
+                    ),
+                    entry.level,
+                    entry.query,
+                )
+            if include_excluded or not judgment or judgment.relevance == "relevant":
+                screened.append(entry)
+        return screened
 
-    def evidence(self, limit: int = 40) -> list[Evidence]:
-        return [entry.evidence for entry in self.entries(limit)]
+    def evidence(self, limit: int = 40, *, include_excluded: bool = False) -> list[Evidence]:
+        return [entry.evidence for entry in self.entries(limit, include_excluded=include_excluded)]
 
-    def summary(self, limit: int = 40) -> list[dict]:
+    def summary(self, limit: int = 40, *, include_excluded: bool = False) -> list[dict]:
         return [
             {
                 "id": entry.evidence.id,
@@ -104,9 +122,70 @@ class EvidenceLedger:
                 "source_kind": entry.evidence.source_kind,
                 "query": entry.query,
                 "excerpt": entry.evidence.text[:700],
+                "screening": (
+                    self._screening[entry.fingerprint].model_dump()
+                    if entry.fingerprint in self._screening
+                    else None
+                ),
             }
-            for entry in self.entries(limit)
+            for entry in self.entries(limit, include_excluded=include_excluded)
         ]
+
+    def apply_screening(self, judgments: list[EvidenceRelevanceJudgment]) -> None:
+        by_id = {entry.evidence.id: entry.fingerprint for entry in self.entries(include_excluded=True)}
+        for judgment in judgments:
+            fingerprint = by_id.get(judgment.evidence_id)
+            if fingerprint:
+                self._screening[fingerprint] = judgment
+
+    def screening_counts(self) -> dict[str, int]:
+        counts = {"relevant": 0, "adjacent": 0, "irrelevant": 0, "unreviewed": 0}
+        for entry in self.entries(include_excluded=True):
+            judgment = self._screening.get(entry.fingerprint)
+            counts[judgment.relevance if judgment else "unreviewed"] += 1
+        return counts
+
+    def evidence_ids_for_subquestion(self, subquestion_id: str) -> list[str]:
+        values: list[str] = []
+        for entry in self.entries():
+            judgment = self._screening.get(entry.fingerprint)
+            if judgment and subquestion_id in judgment.subquestion_ids:
+                values.append(entry.evidence.id)
+        return values
+
+    def query_metrics(self) -> dict[str, dict[str, object]]:
+        """Summarize selected ledger entries by originating query after topic screening."""
+        metrics: dict[str, dict[str, object]] = {}
+        for entry in self.entries(include_excluded=True):
+            value = metrics.setdefault(
+                entry.query,
+                {
+                    "selected_count": 0,
+                    "relevant_count": 0,
+                    "adjacent_count": 0,
+                    "irrelevant_count": 0,
+                    "scores": [],
+                },
+            )
+            value["selected_count"] = int(value["selected_count"]) + 1
+            scores = value["scores"]
+            if isinstance(scores, list):
+                scores.append(entry.evidence.score)
+            judgment = self._screening.get(entry.fingerprint)
+            relevance = judgment.relevance if judgment else "relevant"
+            key = f"{relevance}_count"
+            value[key] = int(value[key]) + 1
+        for value in metrics.values():
+            scores = value.pop("scores")
+            if isinstance(scores, list) and scores:
+                value["score_distribution"] = {
+                    "min": round(min(scores), 6),
+                    "max": round(max(scores), 6),
+                    "mean": round(sum(scores) / len(scores), 6),
+                }
+            else:
+                value["score_distribution"] = {}
+        return metrics
 
 
 def local_evidence_level(hit: SearchHit) -> str:

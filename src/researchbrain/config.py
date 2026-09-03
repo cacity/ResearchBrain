@@ -48,7 +48,7 @@ class Settings:
     zotero_data_dir: Path = Path.home() / "Zotero"
     harness_port: int = 3080
     research_loop_v2: bool = True
-    research_parallel_scouts: bool = False
+    research_parallel_scouts: bool = True
 
     @classmethod
     def load(cls) -> Settings:
@@ -110,7 +110,7 @@ class Settings:
             ),
             research_loop_v2=os.getenv("RESEARCHBRAIN_RESEARCH_LOOP_V2", "1").strip().lower()
             not in {"0", "false", "no", "off"},
-            research_parallel_scouts=os.getenv("RESEARCHBRAIN_PARALLEL_SCOUTS", "0").strip().lower()
+            research_parallel_scouts=os.getenv("RESEARCHBRAIN_PARALLEL_SCOUTS", "1").strip().lower()
             not in {"0", "false", "no", "off"},
         )
 

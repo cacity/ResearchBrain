@@ -151,3 +151,43 @@ async def test_discovery_merges_sources_and_reports_provider_failure():
     assert result.records[0].abstract == "Longer abstract"
     assert result.providers[-1].status == "failed"
     assert result.providers[-1].error == "temporary outage"
+
+
+@pytest.mark.asyncio
+async def test_discovery_runs_only_selected_sources_and_applies_year_range():
+    calls: list[str] = []
+
+    class Provider:
+        def __init__(self, name: str, year: int):
+            self.name = name
+            self.year = year
+
+        async def search(self, _query, _limit):
+            calls.append(self.name)
+            return [
+                DiscoveryRecord(
+                    source=self.name,
+                    source_id=f"{self.name}-{self.year}",
+                    title=f"Paper {self.year}",
+                    authors=[],
+                    year=self.year,
+                    venue="Journal",
+                    abstract="Abstract",
+                    doi="",
+                    url="",
+                )
+            ]
+
+    discovery = LiteratureDiscovery([Provider("crossref", 2019), Provider("openalex", 2024)])
+
+    result = await discovery.search_with_status(
+        "topic",
+        5,
+        sources=["openalex"],
+        year_from=2022,
+        year_to=2025,
+    )
+
+    assert calls == ["openalex"]
+    assert [value.year for value in result.records] == [2024]
+    assert [value.source for value in result.providers] == ["openalex"]

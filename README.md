@@ -21,7 +21,7 @@ CSL-JSON、BibTeX、RIS、DOI 清单或 Markdown，也可通过 MCP 交给 Codex
 MiniMax、DeepSeek 时才会发送相应请求。应用可在 Windows 11 上独立运行，不依赖 WSL、gbrain、
 Docker 或 PostgreSQL。
 
-> 当前为 `0.3.0 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
+> 当前为 `0.3.1 alpha`。核心研究闭环可运行，但还不是 Zotero 的完整替代品。
 
 ![ResearchBrain 桌面界面](docs/images/researchbrain-library.png)
 
@@ -118,15 +118,16 @@ npm run dev
 ## 多轮研究编排
 
 “证据对话”默认使用持久化研究运行：`planning → local_search → gap_assessment → online_search →
-synthesis → verification`。复杂问题可以进行最多三轮本地补检索和一次修订；可选只读 scout 会并行
-处理不同子问题，但默认关闭，便于先比较成本与质量。
+synthesis → verification`。复杂问题可以进行最多三轮本地补检索和一次修订；只读 scout 默认并行
+处理不同子问题。检索工具通过受控注册表执行，具备参数校验、调用预算、生命周期事件和统一错误回传；
+主题契约会在证据进入、引用审查和最终成文三个位置阻断跨领域材料。
 
 ```powershell
 $env:RESEARCHBRAIN_RESEARCH_LOOP_V2 = "1"  # 默认启用
-$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # 可选实验能力
+$env:RESEARCHBRAIN_PARALLEL_SCOUTS = "1"   # 默认启用；设为 0 可关闭
 ```
 
-运行固定的 24 项质量集时，先启动本地 API，再传入普通文库和可选空文库 ID：
+运行固定的 25 项质量集时，先启动本地 API，再传入普通文库和可选空文库 ID：
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -139,6 +140,9 @@ python .\scripts\evaluate_research_answers.py `
 评测记录引用 ID 有效率、子问题覆盖率、可见空结果、耗时、模型步骤和工具调用。真实模型评测会
 产生 API 请求和费用，不会在普通 CI 中自动运行。完整设计与实施状态见
 [多轮研究编排器方案](docs/research-orchestrator-plan.md)。
+与 Pi Agent Harness 的逐项对应关系见 [Pi 模式采用说明](docs/pi-patterns.md)。
+后续增强项的真实完成状态和验收条件，以
+[研究 Agent 实施清单](docs/research-agent-implementation-checklist.md)为准。
 
 ## 首次配置
 
