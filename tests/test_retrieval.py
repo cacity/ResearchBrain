@@ -11,7 +11,7 @@ from researchbrain.library.repository import LibraryRepository
 from researchbrain.retrieval.chunking import chunk_document
 from researchbrain.retrieval.index import LanceIndex
 from researchbrain.retrieval.minimax import MiniMaxEmbedder
-from researchbrain.retrieval.service import EmbeddingPipeline
+from researchbrain.retrieval.service import EmbeddingPipeline, _item_metadata_text
 
 
 class FixtureEmbedder:
@@ -32,6 +32,26 @@ class FixtureEmbedder:
     @staticmethod
     def _vector(text):
         return [1.0, 0.0, 0.0, 0.0] if "storm" in text.lower() else [0.0, 1.0, 0.0, 0.0]
+
+
+def test_item_metadata_text_includes_controlled_keywords_for_local_fusion():
+    item = type(
+        "ItemLike",
+        (),
+        {
+            "title": "Storm Paper",
+            "abstract": "Geomagnetic storm abstract",
+            "raw_data": {"keywords": ["ionospheric disturbance", {"tag": "space weather"}]},
+            "container_title": "Journal",
+            "year": 2024,
+            "publisher": "",
+            "url": "",
+        },
+    )()
+
+    text = _item_metadata_text(item)
+
+    assert "Keywords: ionospheric disturbance, space weather" in text
 
 
 def test_chunk_document_keeps_evidence_location():

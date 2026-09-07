@@ -116,6 +116,24 @@ def merge_research_intent(explicit: ResearchIntent, inferred: ResearchIntent) ->
     start_year = explicit.time_range.start_year or inferred.time_range.start_year
     end_year = explicit.time_range.end_year or inferred.time_range.end_year
     description = explicit.time_range.description or inferred.time_range.description
+    inferred_ambiguities = _union(explicit.ambiguities, inferred.ambiguities, 12)
+    explicit_topic_anchor = bool(explicit.domains or explicit.research_objects or explicit.methods)
+    clarification_required = explicit.clarification_required or (
+        inferred.clarification_required and not explicit_topic_anchor
+    )
+    if clarification_required:
+        ambiguities = inferred_ambiguities
+        assumptions = _union(explicit.assumptions, inferred.assumptions, 12)
+    else:
+        ambiguities = []
+        assumptions = _union(
+            explicit.assumptions,
+            [
+                *inferred.assumptions,
+                "未指定的应用分支与报告格式按主题相关的合理默认范围处理。",
+            ],
+            12,
+        )
     return inferred.model_copy(
         update={
             "normalized_question": explicit.normalized_question,
@@ -137,9 +155,9 @@ def merge_research_intent(explicit: ResearchIntent, inferred: ResearchIntent) ->
             "must_include": _union(explicit.must_include, inferred.must_include, 20),
             "must_exclude": _union(explicit.must_exclude, inferred.must_exclude, 20),
             "deliverables": _union(explicit.deliverables, inferred.deliverables, 12),
-            "ambiguities": _union(explicit.ambiguities, inferred.ambiguities, 12),
-            "assumptions": _union(explicit.assumptions, inferred.assumptions, 12),
-            "clarification_required": explicit.clarification_required or inferred.clarification_required,
+            "ambiguities": ambiguities,
+            "assumptions": assumptions,
+            "clarification_required": clarification_required,
         }
     )
 

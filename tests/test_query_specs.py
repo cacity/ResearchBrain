@@ -6,10 +6,15 @@ from researchbrain.orchestration.models import (
     ResearchTimeRange,
 )
 from researchbrain.orchestration.queries import (
+    broaden_online_query_specs,
     normalize_query_specs,
     normalize_subquestions,
     rewrite_local_query_specs,
 )
+
+
+def _has_cjk(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
 
 
 def test_subquestions_are_typed_deduplicated_scoped_and_cover_requirements():
@@ -59,12 +64,49 @@ def test_query_specs_fill_bilingual_queries_and_source_adapters():
     assert any(value.language == "zh" and value.source == "local" for value in specs)
     assert any(value.language == "en" and value.source == "crossref" for value in specs)
     assert any(value.language == "en" and value.synonyms for value in specs)
+    assert any(
+        value.source == "crossref" and value.language == "en" and "球" not in value.query for value in specs
+    )
+    assert any(
+        value.source == "openalex" and value.language == "en" and value.synonyms and "球" not in value.query
+        for value in specs
+    )
     assert {"crossref", "openalex", "arxiv"} <= {value.source for value in specs}
     assert all(value.source != "all_online" for value in specs)
     assert all(value.subquestion_id == "Q1" for value in specs)
     assert all(value.start_year == 2022 and value.end_year == 2026 for value in specs)
     assert all("多波束声呐" in value.excluded_terms for value in specs)
     assert len({value.id for value in specs}) == len(specs)
+
+
+def test_every_subquestion_gets_pure_english_core_and_expansion_queries():
+    intent = ResearchIntent(
+        normalized_question="比较球谐分析和最小二乘的数据流程，排除多波束声呐",
+        domains=["地磁场"],
+        methods=["球谐分析", "最小二乘"],
+        must_exclude=["多波束声呐"],
+    )
+    plan = ResearchPlan(
+        intent="方法比较",
+        research_intent=intent,
+        subquestions=[
+            ResearchSubquestion(id="Q1", question="球谐分析的数据流程", type="workflow"),
+            ResearchSubquestion(id="Q2", question="最小二乘方法有哪些局限", type="limitation"),
+        ],
+        queries=["球谐分析", "最小二乘"],
+    )
+
+    specs = normalize_query_specs(plan, intent)
+
+    for subquestion in plan.subquestions:
+        own_specs = [value for value in specs if value.subquestion_id == subquestion.id]
+        assert any(
+            value.source == "crossref" and value.language == "en" and not _has_cjk(value.query)
+            for value in own_specs
+        )
+        assert any(
+            value.language == "en" and value.synonyms and not _has_cjk(value.query) for value in own_specs
+        )
 
 
 def test_query_rewrite_expands_zero_hits_and_narrows_noisy_results():
@@ -120,6 +162,46 @@ def test_query_rewrite_expands_zero_hits_and_narrows_noisy_results():
     assert "地球物理学" in narrowed[0].query
     assert "多波束声呐" in narrowed[0].excluded_terms
     assert "噪声过高" in narrowed[0].rationale
+
+
+def test_online_broadening_removes_narrow_ml_terms_and_searches_all_sources():
+    intent = ResearchIntent(
+        normalized_question="研究 IGS 和 CODE TEC 与地震的关系，并比较深度学习模型",
+        domains=["ionosphere"],
+        research_objects=["TEC", "earthquake"],
+        methods=["ConvLSTM", "UNet"],
+        data_requirements=["IGS", "CODE"],
+    )
+    plan = ResearchPlan(
+        intent=intent.normalized_question,
+        research_intent=intent,
+        subquestions=[ResearchSubquestion(id="Q1", question="Which TEC earthquake studies exist?")],
+        queries=["TEC earthquake prediction deep learning"],
+        topic_terms=["TEC", "earthquake", "ionosphere"],
+        query_specs=[
+            QuerySpec(
+                id="S1",
+                subquestion_id="Q1",
+                language="en",
+                source="openalex",
+                query="TEC earthquake prediction deep learning ConvLSTM UNet",
+            )
+        ],
+    )
+
+    specs = broaden_online_query_specs(
+        plan,
+        [],
+        intent.normalized_question,
+        ["TEC earthquake prediction deep learning ConvLSTM UNet"],
+        limit=2,
+    )
+
+    assert specs
+    assert all(value.source == "all_online" for value in specs)
+    assert all("convlstm" not in value.query.casefold() for value in specs)
+    assert all("unet" not in value.query.casefold() for value in specs)
+    assert any("TEC" in value.query and "earthquake" in value.query for value in specs)
 
 
 def test_pubmed_query_uses_fields_dates_and_exclusions_for_biomedical_intent():

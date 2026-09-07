@@ -1,11 +1,12 @@
 import time
 from dataclasses import replace
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from researchbrain.api.app import create_app
-from researchbrain.db.models import Attachment, ChatMessage, ChatSession, Item, Job
+from researchbrain.db.models import Attachment, ChatMessage, ChatSession, ChatSessionMemory, Item, Job
 from researchbrain.domain import ReferenceRecord
 from researchbrain.fulltext.discovery import (
     OpenAlexFullTextProvider,
@@ -327,6 +328,109 @@ def test_chat_sessions_are_persisted_and_listed_with_latest_message(settings):
             "Latest question",
             "Latest evidence-grounded answer",
         ]
+
+
+@pytest.mark.research_session_branching
+def test_chat_session_branches_preserve_tree_and_inherit_only_safe_memory(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        library_id = client.post(
+            "/v1/libraries",
+            json={"name": "Branches", "mode": "standalone"},
+        ).json()["id"]
+        session_id = client.post(
+            "/v1/chat/sessions",
+            json={"library_id": library_id, "title": "Trunk"},
+        ).json()["id"]
+        with app.state.researchbrain.database.session() as session:
+            first = ChatMessage(session_id=session_id, role="user", content="只研究中国近海")
+            session.add(first)
+            session.flush()
+            answer = ChatMessage(
+                session_id=session_id,
+                parent_message_id=first.id,
+                role="assistant",
+                content="旧回答不能当证据",
+                model="fixture",
+            )
+            second = ChatMessage(
+                session_id=session_id,
+                parent_message_id=answer.id,
+                role="user",
+                content="从这里分支",
+            )
+            session.add_all([answer, second])
+            session.add(
+                ChatSessionMemory(
+                    session_id=session_id,
+                    summary={
+                        "goal": "研究目标",
+                        "constraints": ["只研究中国近海"],
+                        "terminology": ["球谐分析"],
+                        "supported_findings": ["旧回答不能当证据"],
+                        "source_identifiers": ["10.1000/branch"],
+                        "unresolved_questions": ["方法差异"],
+                    },
+                    through_message_id=answer.id,
+                    message_count=2,
+                )
+            )
+            session.flush()
+            source_message_id = second.id
+
+        response = client.post(
+            f"/v1/chat/sessions/{session_id}/branches",
+            json={"source_message_id": source_message_id, "name": "方法分支"},
+        )
+
+        assert response.status_code == 201
+        branch = response.json()
+        assert branch["parent_session_id"] == session_id
+        assert branch["branch_source_message_id"] == source_message_id
+        assert branch["branch_name"] == "方法分支"
+        assert [node["id"] for node in branch["branch_path"]] == [session_id, branch["id"]]
+        assert client.get(f"/v1/chat/sessions/{branch['id']}/messages").json() == []
+        with app.state.researchbrain.database.session() as session:
+            memory = session.get(ChatSessionMemory, branch["id"])
+            assert memory is not None
+            assert memory.through_message_id == source_message_id
+            assert memory.summary["constraints"] == ["只研究中国近海"]
+            assert memory.summary["source_identifiers"] == ["10.1000/branch"]
+            assert memory.summary["supported_findings"] == []
+            assert memory.summary["branch_inherits_evidence"] is False
+
+
+@pytest.mark.research_session_branching
+def test_chat_branch_archive_does_not_break_child_branch_path(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        library_id = client.post(
+            "/v1/libraries",
+            json={"name": "Archive branches", "mode": "standalone"},
+        ).json()["id"]
+        session_id = client.post(
+            "/v1/chat/sessions",
+            json={"library_id": library_id, "title": "Trunk"},
+        ).json()["id"]
+        with app.state.researchbrain.database.session() as session:
+            message = ChatMessage(session_id=session_id, role="user", content="分支源")
+            session.add(message)
+            session.flush()
+            source_message_id = message.id
+        branch = client.post(
+            f"/v1/chat/sessions/{session_id}/branches",
+            json={"source_message_id": source_message_id, "name": "子分支"},
+        ).json()
+
+        archived = client.post(f"/v1/chat/sessions/{session_id}/archive").json()
+        visible = client.get(f"/v1/chat/sessions?library_id={library_id}").json()
+        all_sessions = client.get(f"/v1/chat/sessions?library_id={library_id}&include_archived=true").json()
+        path = client.get(f"/v1/chat/sessions/{branch['id']}/branch-path").json()
+
+        assert archived["archived_at"]
+        assert session_id not in {value["id"] for value in visible}
+        assert session_id in {value["id"] for value in all_sessions}
+        assert [node["id"] for node in path] == [session_id, branch["id"]]
 
 
 def test_chat_reports_missing_embedding_key_instead_of_hanging(settings, monkeypatch):

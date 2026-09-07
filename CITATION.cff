@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use this software in research, please cite the software release."
 title: "ResearchBrain"
 type: software
-version: 0.1.8
-date-released: 2026-08-17
+version: 0.4.6
+date-released: 2026-09-06
 license: AGPL-3.0-only
 authors:
   - name: "ResearchBrain contributors"

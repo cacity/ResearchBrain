@@ -187,6 +187,36 @@ class EvidenceLedger:
                 value["score_distribution"] = {}
         return metrics
 
+    def snapshot(self) -> dict:
+        return {
+            "local_prefix": self.local_prefix,
+            "max_chunks_per_item": self.max_chunks_per_item,
+            "local": [{"hit": asdict(hit), "query": query} for hit, query in self._local.values()],
+            "online": [{"record": asdict(record), "query": query} for record, query in self._online.values()],
+            "screening": {
+                fingerprint: judgment.model_dump(mode="json")
+                for fingerprint, judgment in self._screening.items()
+            },
+        }
+
+    @classmethod
+    def from_snapshot(cls, payload: dict) -> EvidenceLedger:
+        ledger = cls(
+            local_prefix=str(payload.get("local_prefix") or "L"),
+            max_chunks_per_item=int(payload.get("max_chunks_per_item") or 3),
+        )
+        for value in payload.get("local") or []:
+            hit = SearchHit(**dict(value.get("hit") or {}))
+            ledger._local[hit.chunk_id] = (hit, str(value.get("query") or ""))
+        for value in payload.get("online") or []:
+            record = DiscoveryRecord(**dict(value.get("record") or {}))
+            ledger._online[_online_key(record)] = (record, str(value.get("query") or ""))
+        ledger._screening = {
+            str(fingerprint): EvidenceRelevanceJudgment.model_validate(judgment)
+            for fingerprint, judgment in dict(payload.get("screening") or {}).items()
+        }
+        return ledger
+
 
 def local_evidence_level(hit: SearchHit) -> str:
     if hit.chunk_id.startswith("metadata:") or hit.section == "题录与摘要":

@@ -1,3 +1,6 @@
+import asyncio
+import os
+
 import httpx
 import pytest
 
@@ -149,8 +152,112 @@ async def test_discovery_merges_sources_and_reports_provider_failure():
     assert len(result.records) == 1
     assert result.records[0].sources == ["good", "better"]
     assert result.records[0].abstract == "Longer abstract"
+    assert result.merge_report[0].canonical_key == "doi:10.1000/merged"
+    assert result.merge_report[0].sources == ["good", "better"]
+    assert "doi:10.1000/merged" in result.merge_report[0].match_keys
     assert result.providers[-1].status == "failed"
     assert result.providers[-1].error == "temporary outage"
+
+
+@pytest.mark.asyncio
+async def test_discovery_merges_by_pmid_arxiv_and_normalized_title_with_best_record_retained():
+    class Provider:
+        def __init__(self, name: str, records: list[DiscoveryRecord]):
+            self.name = name
+            self._records = records
+
+        async def search(self, _query, _limit):
+            return self._records
+
+    pubmed_minimal = DiscoveryRecord(
+        source="pubmed",
+        source_id="123",
+        title="Shared PMID paper",
+        authors=[],
+        year=None,
+        venue="",
+        abstract="",
+        doi="",
+        url="",
+        identifiers={"pmid": "123"},
+    )
+    openalex_complete = DiscoveryRecord(
+        source="openalex",
+        source_id="W1",
+        title="Shared PMID paper",
+        authors=["Ada Lovelace"],
+        year=2026,
+        venue="Journal",
+        abstract="Detailed traceable abstract.",
+        doi="",
+        url="https://example.org/pmid",
+        identifiers={"pmid": "123", "openalex": "W1"},
+    )
+    arxiv = DiscoveryRecord(
+        source="arxiv",
+        source_id="2608.00001v1",
+        title="Arxiv duplicate",
+        authors=[],
+        year=2026,
+        venue="arXiv",
+        abstract="",
+        doi="",
+        url="https://arxiv.org/abs/2608.00001v1",
+        identifiers={"arxiv": "2608.00001v1"},
+    )
+    crossref_arxiv = DiscoveryRecord(
+        source="crossref",
+        source_id="10.1000/arxiv",
+        title="Arxiv duplicate",
+        authors=[],
+        year=2026,
+        venue="Journal",
+        abstract="Published abstract.",
+        doi="10.1000/arxiv",
+        url="https://doi.org/10.1000/arxiv",
+        identifiers={"arxiv": "2608.00001v1", "doi": "10.1000/arxiv"},
+    )
+    title_a = DiscoveryRecord(
+        source="crossref",
+        source_id="title-a",
+        title="  Normalized   Title Match ",
+        authors=[],
+        year=2024,
+        venue="",
+        abstract="",
+        doi="",
+        url="",
+    )
+    title_b = DiscoveryRecord(
+        source="openalex",
+        source_id="title-b",
+        title="Normalized Title Match",
+        authors=["Grace Hopper"],
+        year=2024,
+        venue="Venue",
+        abstract="Abstract makes this record more complete.",
+        doi="",
+        url="https://example.org/title",
+    )
+
+    discovery = LiteratureDiscovery(
+        [
+            Provider("pubmed", [pubmed_minimal]),
+            Provider("openalex", [openalex_complete, title_b]),
+            Provider("arxiv", [arxiv]),
+            Provider("crossref", [crossref_arxiv, title_a]),
+        ]
+    )
+    result = await discovery.search_with_status("topic", 5)
+
+    assert len(result.records) == 3
+    by_key = {entry.canonical_key: entry for entry in result.merge_report}
+    assert by_key["pmid:123"].merged_count == 2
+    assert by_key["pmid:123"].retained_source == "openalex"
+    assert by_key["doi:10.1000/arxiv"].merged_count == 2
+    assert "arxiv:2608.00001v1" in by_key["doi:10.1000/arxiv"].match_keys
+    assert by_key["title:normalized title match"].merged_count == 2
+    assert by_key["title:normalized title match"].retained_source == "openalex"
 
 
 @pytest.mark.asyncio
@@ -191,3 +298,196 @@ async def test_discovery_runs_only_selected_sources_and_applies_year_range():
     assert calls == ["openalex"]
     assert [value.year for value in result.records] == [2024]
     assert [value.source for value in result.providers] == ["openalex"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_combines_relevance_and_time_sorting_with_report():
+    class Provider:
+        name = "crossref"
+
+        async def search(self, _query, _limit):
+            return [
+                DiscoveryRecord(
+                    source="crossref",
+                    source_id="old-relevant",
+                    title="Storm model",
+                    authors=[],
+                    year=2018,
+                    venue="Journal",
+                    abstract="Storm response model with validation.",
+                    doi="",
+                    url="",
+                ),
+                DiscoveryRecord(
+                    source="crossref",
+                    source_id="new-adjacent",
+                    title="Adjacent paper",
+                    authors=[],
+                    year=2026,
+                    venue="Journal",
+                    abstract="Unrelated background.",
+                    doi="",
+                    url="",
+                ),
+                DiscoveryRecord(
+                    source="crossref",
+                    source_id="newer-relevant",
+                    title="Storm response model",
+                    authors=[],
+                    year=2025,
+                    venue="Journal",
+                    abstract="Storm response model.",
+                    doi="",
+                    url="",
+                ),
+            ]
+
+    result = await LiteratureDiscovery([Provider()]).search_with_status("storm response model", 5)
+
+    assert [record.source_id for record in result.records] == [
+        "newer-relevant",
+        "old-relevant",
+        "new-adjacent",
+    ]
+    assert result.ranking_report[0]["sort"] == "relevance_then_time_then_traceability"
+    assert result.ranking_report[0]["relevance_score"] >= result.ranking_report[1]["relevance_score"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_provider_retry_reports_degraded_success_and_failed_degradation():
+    class FlakyProvider:
+        name = "flaky"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def search(self, _query, _limit):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("rate limited")
+            return [
+                DiscoveryRecord(
+                    source="flaky",
+                    source_id="ok",
+                    title="Recovered",
+                    authors=[],
+                    year=2026,
+                    venue="Journal",
+                    abstract="Abstract",
+                    doi="",
+                    url="",
+                )
+            ]
+
+    class FailedProvider:
+        name = "failed"
+
+        async def search(self, _query, _limit):
+            raise RuntimeError("still down")
+
+    discovery = LiteratureDiscovery([FlakyProvider(), FailedProvider()], provider_retries=2)
+    result = await discovery.search_with_status("topic", 5)
+
+    by_source = {status.source: status for status in result.providers}
+    assert by_source["flaky"].status == "degraded"
+    assert by_source["flaky"].attempts == 2
+    assert by_source["flaky"].degraded_reason == "succeeded after provider-level retry"
+    assert by_source["failed"].status == "failed"
+    assert by_source["failed"].degraded_reason == "provider unavailable after retries"
+
+
+@pytest.mark.asyncio
+async def test_discovery_provider_timeout_isolated_before_tool_timeout():
+    class SlowProvider:
+        name = "slow"
+
+        async def search(self, _query, _limit):
+            await asyncio.sleep(1)
+            return []
+
+    discovery = LiteratureDiscovery(
+        [SlowProvider()],
+        provider_retries=1,
+        provider_timeout_seconds=0.01,
+    )
+    result = await discovery.search_with_status("topic", 5)
+
+    assert result.records == []
+    assert result.providers[0].status == "failed"
+    assert result.providers[0].elapsed_ms < 500
+    assert result.providers[0].error
+
+
+@pytest.mark.asyncio
+async def test_discovery_expands_seed_references_and_citations():
+    seed = DiscoveryRecord(
+        source="openalex",
+        source_id="W0",
+        title="Seed storm model",
+        authors=[],
+        year=2025,
+        venue="Journal",
+        abstract="storm model",
+        doi="",
+        url="",
+        identifiers={"openalex": "W0"},
+    )
+    reference = DiscoveryRecord(
+        source="openalex",
+        source_id="W-ref",
+        title="Reference storm model",
+        authors=[],
+        year=2020,
+        venue="Journal",
+        abstract="reference",
+        doi="",
+        url="",
+        identifiers={"openalex": "W-ref"},
+    )
+    citation = DiscoveryRecord(
+        source="openalex",
+        source_id="W-cite",
+        title="Citing storm model",
+        authors=[],
+        year=2026,
+        venue="Journal",
+        abstract="citation",
+        doi="",
+        url="",
+        identifiers={"openalex": "W-cite"},
+    )
+
+    class Provider:
+        name = "openalex"
+
+        async def search(self, _query, _limit):
+            return [seed]
+
+        async def expand_seed(self, record, _limit):
+            assert record.source_id == "W0"
+            return [reference, citation]
+
+    result = await LiteratureDiscovery([Provider()]).search_with_status(
+        "storm model", 5, track_citations=True
+    )
+
+    assert {record.source_id for record in result.records} == {"W0", "W-ref", "W-cite"}
+    assert result.seed_report[0]["relations"] == ["references", "citations"]
+    assert any(status.source == "openalex:seed_expansion" for status in result.providers)
+
+
+@pytest.mark.asyncio
+async def test_optional_real_discovery_smoke():
+    if os.environ.get("RESEARCHBRAIN_REAL_DISCOVERY_SMOKE") != "1":
+        pytest.skip("set RESEARCHBRAIN_REAL_DISCOVERY_SMOKE=1 to call real metadata services")
+    discovery = LiteratureDiscovery(
+        [
+            CrossrefSearchProvider("https://api.crossref.org", ""),
+            OpenAlexSearchProvider(""),
+            ArxivSearchProvider(),
+            PubMedSearchProvider(""),
+        ]
+    )
+    result = await discovery.search_with_status("spherical harmonic analysis", 1, track_citations=False)
+    assert result.providers
+    assert any(status.status in {"complete", "degraded"} for status in result.providers)

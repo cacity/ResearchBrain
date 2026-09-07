@@ -8,7 +8,11 @@ from typing import Any
 
 import httpx
 
-from researchbrain.orchestration.evaluation import score_research_result
+from researchbrain.orchestration.evaluation import (
+    build_blind_review_packet,
+    score_research_result,
+    summarize_quality_results,
+)
 
 
 def request(client: httpx.Client, method: str, path: str, **kwargs) -> Any:
@@ -104,6 +108,17 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, default=Path("research-quality-results.json"))
     parser.add_argument(
+        "--baseline-output",
+        type=Path,
+        help="Optional path for the aggregate fixed-set baseline metrics JSON",
+    )
+    parser.add_argument(
+        "--blind-output",
+        type=Path,
+        help="Optional path for reproducible same-question blind-review pairs",
+    )
+    parser.add_argument("--blind-seed", default="researchbrain-v1-v2")
+    parser.add_argument(
         "--implementation",
         choices=["v1", "v2", "both"],
         default="both",
@@ -133,8 +148,24 @@ def main() -> int:
                             "error": str(exc),
                         }
                     )
-    payload = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "results": results}
+    generated_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    baseline = {
+        "generated_at": generated_at,
+        "case_file": str(args.cases),
+        "summary": summarize_quality_results(results),
+    }
+    blind_packet = build_blind_review_packet(results, seed=args.blind_seed)
+    payload = {
+        "generated_at": generated_at,
+        "results": results,
+        "baseline": baseline,
+        "blind_review": blind_packet,
+    }
     args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.baseline_output:
+        args.baseline_output.write_text(json.dumps(baseline, ensure_ascii=False, indent=2), encoding="utf-8")
+    if args.blind_output:
+        args.blind_output.write_text(json.dumps(blind_packet, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Wrote {len(results)} cases to {args.output}")
     return 0
 

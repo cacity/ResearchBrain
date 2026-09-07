@@ -43,6 +43,7 @@ async def test_tool_registry_validates_streams_and_preserves_result_order():
 
 
 @pytest.mark.asyncio
+@pytest.mark.research_agent_action_loop
 async def test_tool_registry_enforces_budget_and_read_only_registration():
     async def execute(arguments: Arguments):
         return arguments.value

@@ -86,6 +86,29 @@ _STOPWORDS = {
     "报告",
 }
 
+_BROAD_QUERY_STOPWORDS = _STOPWORDS | {
+    "anomaly",
+    "challenges",
+    "convlstm",
+    "data",
+    "deep",
+    "detection",
+    "findings",
+    "learning",
+    "limitations",
+    "machine",
+    "method",
+    "methods",
+    "model",
+    "models",
+    "prediction",
+    "preprocessing",
+    "processing",
+    "results",
+    "unet",
+    "workflow",
+}
+
 
 def normalize_subquestions(
     subquestions: list[ResearchSubquestion],
@@ -336,6 +359,69 @@ def online_query_specs(
     return values
 
 
+def broaden_online_query_specs(
+    plan: ResearchPlan,
+    coverage: list[CoverageItem],
+    question: str,
+    attempted_queries: list[str],
+    limit: int = 2,
+) -> list[QuerySpec]:
+    """Create a bounded cross-provider retry after narrow online queries return no evidence."""
+    attempted = {_normalize(value) for value in attempted_queries}
+    intent = plan.research_intent or ResearchIntent(normalized_question=question)
+    source_queries = [
+        value.query
+        for value in plan.query_specs
+        if value.source != "local" and value.language in {"en", "mixed"}
+    ]
+    candidates = [
+        _broad_online_query(value)
+        for value in [
+            *source_queries,
+            _english_core_query(plan.subquestions[0], intent),
+            " ".join([*plan.topic_terms, *intent.research_objects, *intent.data_requirements]),
+        ]
+    ]
+    candidates = [
+        value
+        for value in _deduplicate(candidates, max(limit * 3, limit))
+        if _normalize(value) not in attempted and len(_tokens(value)) >= 2
+    ][:limit]
+    if not candidates:
+        return []
+
+    unresolved = [value for value in coverage if value.status != "covered"]
+    fallback_subquestion = unresolved[0].subquestion_id if unresolved else plan.subquestions[0].id
+    next_id = _next_spec_number(plan.query_specs)
+    return [
+        QuerySpec(
+            id=f"S{next_id + index}",
+            subquestion_id=_best_subquestion(query, plan.subquestions).id or fallback_subquestion,
+            language="en",
+            source="all_online",
+            query=query,
+            concepts=_concepts(query),
+            excluded_terms=list(plan.excluded_terms),
+            start_year=intent.time_range.start_year,
+            end_year=intent.time_range.end_year,
+            rationale="首轮在线检索无有效证据，移除过窄方法限定并跨来源扩展",
+        )
+        for index, query in enumerate(candidates)
+    ]
+
+
+def _broad_online_query(value: str) -> str:
+    clean = re.sub(r"\[[^\]]+\]", " ", _to_english(value))
+    clean = re.sub(r'\b(?:AND|OR|NOT)\b|[\"():]', " ", clean, flags=re.I)
+    words = []
+    for word in _WORD_RE.findall(clean):
+        normalized = word.casefold()
+        if normalized in _BROAD_QUERY_STOPWORDS or normalized.isdigit():
+            continue
+        words.append(word)
+    return " ".join(_deduplicate(words, 6))
+
+
 def _next_spec_number(specs: list[QuerySpec]) -> int:
     numbers = [int(value.id[1:]) for value in specs if value.id[1:].isdigit()]
     return max(numbers, default=0) + 1
@@ -446,10 +532,12 @@ def _base_spec(
     excluded_terms: list[str] | None = None,
 ) -> QuerySpec:
     query = (
-        _local_core(subquestion.question, intent) if language == "zh" else _to_english(subquestion.question)
+        _local_core(subquestion.question, intent)
+        if language == "zh"
+        else _english_core_query(subquestion, intent)
     )
     concepts = _concepts(query)
-    resolved_language = language if language == "zh" else _query_language(query)
+    resolved_language = language if language == "zh" else "en"
     return QuerySpec(
         id="S1",
         subquestion_id=subquestion.id,
@@ -469,14 +557,14 @@ def _synonym_spec(
     intent: ResearchIntent,
     excluded_terms: list[str],
 ) -> QuerySpec:
-    core = _to_english(subquestion.question)
-    synonyms = _mapped_terms(subquestion.question, to_english=True)
+    core = _english_core_query(subquestion, intent)
+    synonyms = _english_synonyms(subquestion.question, intent)
     abbreviations = [value for value in re.findall(r"\b[A-Z][A-Z0-9-]{1,}\b", subquestion.question)]
     expansion = _deduplicate([core, *synonyms, *abbreviations], 8)
     return QuerySpec(
         id="S1",
         subquestion_id=subquestion.id,
-        language=_query_language(core),
+        language="en",
         source="openalex",
         query=" OR ".join(f'"{value}"' if " " in value else value for value in expansion)[:500],
         concepts=_concepts(core),
@@ -512,6 +600,67 @@ def _local_core(question: str, intent: ResearchIntent) -> str:
     query = re.sub(r"^(?:请|麻烦)?(?:帮我|给我)?(?:调研|研究|分析|查找|查询)(?:一下)?[，,：:\s]*", "", query)
     query = re.sub(r"(?:形成|生成|输出|写成).*(?:报告|综述|表)$", "", query).strip(" ，,。；;")
     return " ".join(_deduplicate([*scientific, query], 12))[:500]
+
+
+def _english_core_query(subquestion: ResearchSubquestion, intent: ResearchIntent) -> str:
+    """Build a source-safe English core query for every subquestion.
+
+    The deterministic mapper is intentionally conservative: it uses the controlled
+    bilingual term table, explicit intent fields, existing Latin tokens, and a
+    subquestion-type qualifier. Unknown Chinese prose is not copied into English
+    source queries, but the original wording remains available in local Chinese
+    QuerySpecs and in concepts recorded on model-provided specs.
+    """
+    candidates = [
+        subquestion.question,
+        intent.normalized_question,
+        *intent.domains,
+        *intent.research_objects,
+        *intent.methods,
+        *intent.data_requirements,
+        *intent.must_include,
+    ]
+    mapped = [term for value in candidates for term in _mapped_terms(value, to_english=True)]
+    english_words = [word for value in candidates for word in _english_terms(value)]
+    kind_terms = {
+        "people_and_work": ["authors", "contributions"],
+        "data": ["dataset", "data source"],
+        "method": ["methods"],
+        "workflow": ["workflow", "pipeline"],
+        "result": ["results", "findings"],
+        "limitation": ["limitations"],
+        "comparison": ["comparison"],
+        "research_gap": ["research gaps", "future work"],
+    }.get(subquestion.type, ["literature review"])
+    terms = _deduplicate([*mapped, *english_words, *kind_terms], 10)
+    return _strip_cjk(" ".join(terms)) or "academic literature review"
+
+
+def _english_synonyms(question: str, intent: ResearchIntent) -> list[str]:
+    values = [
+        question,
+        intent.normalized_question,
+        *intent.domains,
+        *intent.research_objects,
+        *intent.methods,
+        *intent.data_requirements,
+    ]
+    synonyms = [term for value in values for term in _mapped_terms(value, to_english=True)]
+    english = [term for value in values for term in _english_terms(value)]
+    return _deduplicate([*_strip_cjk_list(synonyms), *_strip_cjk_list(english)], 20)
+
+
+def _english_terms(value: str) -> list[str]:
+    translated = _strip_cjk(_to_english(value))
+    return [word for word in _concepts(translated) if not _CJK_RE.search(word)]
+
+
+def _strip_cjk(value: str) -> str:
+    return " ".join(re.sub(r"[\u4e00-\u9fff]+", " ", value).split()).strip(" ,，。；;：:")
+
+
+def _strip_cjk_list(values: list[str]) -> list[str]:
+    return [clean for value in values if (clean := _strip_cjk(value))]
 
 
 def _to_chinese(value: str) -> str:
