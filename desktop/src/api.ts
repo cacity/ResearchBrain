@@ -107,6 +107,7 @@ export type ZoteroSyncStatus = {
 
 export type ChatMessage = {
   id: string;
+  parent_message_id?: string;
   role: "user" | "assistant";
   content: string;
   citations: Evidence[];
@@ -122,8 +123,30 @@ export type ChatSessionSummary = {
   title: string;
   message_count: number;
   last_message_preview: string;
+  parent_session_id: string;
+  root_message_id: string;
+  branch_source_message_id: string;
+  branch_name: string;
+  branch_source: string;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type ResearchFollowUp = {
+  id: string;
+  source_run_id: string;
+  source_message_id: string;
+  target_session_id: string;
+  target_branch_id: string;
+  position: number;
+  content: string;
+  mode: "local" | "hybrid" | "online";
+  status: "queued" | "starting" | "running" | "completed" | "failed";
+  started_run_id: string;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
 };
 
 export type ResearchApproval = {
@@ -133,6 +156,51 @@ export type ResearchApproval = {
   reason: string;
   status: "pending" | "approved" | "rejected";
   batch_id?: string;
+};
+
+export type ResearchIntent = {
+  task_type: string;
+  normalized_question: string;
+  domains: string[];
+  research_objects: string[];
+  methods: string[];
+  data_requirements: string[];
+  time_range: {
+    start_year: number | null;
+    end_year: number | null;
+    description: string;
+  };
+  geography: string[];
+  languages: string[];
+  must_answer: string[];
+  must_include: string[];
+  must_exclude: string[];
+  deliverables: string[];
+  ambiguities: string[];
+  assumptions: string[];
+  clarification_required: boolean;
+};
+
+export type QuerySpec = {
+  id: string;
+  subquestion_id: string;
+  language: "zh" | "en" | "mixed";
+  source: string;
+  query: string;
+  rationale: string;
+};
+
+export type QueryDiagnostic = QuerySpec & {
+  status: string;
+  result_count: number;
+  added_count: number;
+  duplicate_count: number;
+  relevant_count: number;
+  adjacent_count: number;
+  irrelevant_count: number;
+  score_distribution: { min?: number; max?: number; mean?: number };
+  providers: string[];
+  error: string;
 };
 
 export type ResearchRun = {
@@ -174,12 +242,91 @@ export type ResearchEvent = {
   levels?: Record<string, number>;
   counts?: Record<string, number>;
   coverage?: Array<Record<string, unknown>>;
+  subquestions?: Array<{
+    id: string;
+    question: string;
+    required_level: string;
+  }>;
+  queries?: string[];
+  research_intent?: ResearchIntent;
+  query_specs?: QuerySpec[];
+  query_id?: string;
+  subquestion_id?: string;
+  language?: "zh" | "en" | "mixed";
+  source?: string;
+  query?: string;
+  rationale?: string;
+  result_count?: number;
+  added_count?: number;
+  duplicate_count?: number;
+  relevant_count?: number;
+  adjacent_count?: number;
+  irrelevant_count?: number;
+  score_distribution?: { min?: number; max?: number; mean?: number };
+  providers?: string[];
+  topic_terms?: string[];
+  excluded_terms?: string[];
+  judgments?: Array<{
+    evidence_id: string;
+    relevance: "relevant" | "adjacent" | "irrelevant";
+    reason: string;
+  }>;
+  blocking?: number;
+  warnings?: number;
+  issues?: Array<{
+    type: string;
+    claim: string;
+    claim_id?: string;
+    severity?: string;
+    citation_ids: string[];
+    evidence_ids?: string[];
+    reason: string;
+    suggestion?: string;
+  }>;
+  claims?: Array<{
+    claim_id: string;
+    text: string;
+    citation_ids: string[];
+    evidence_spans: Array<{
+      evidence_id: string;
+      span: string;
+      support_reason?: string;
+    }>;
+    claim_type?: string;
+    support_status?: string;
+  }>;
+  stop?: boolean;
+  reason?: string;
+  next_requirement?: string;
+  questions?: string[];
+  clarification_resolved?: boolean;
+  action?: string;
+  tool_calls?: Array<{
+    id: string;
+    tool: string;
+    arguments?: Record<string, unknown>;
+  }>;
+  result?: unknown;
+  batch_status?: string;
+  active_jobs?: number;
+  follow_up?: ResearchFollowUp;
   message_id?: string;
   message?: string;
+  content?: string;
   code?: string;
   approval?: ResearchApproval;
   metrics?: Record<string, unknown>;
   limitations?: string[];
+  call_id?: string;
+  tool?: string;
+  status?: string;
+  error?: string;
+  requested_calls?: number;
+  accepted_calls?: number;
+  skipped_calls?: number;
+  remaining_before?: number;
+  max_tool_calls?: number;
+  continue_with_existing_evidence?: boolean;
 };
 
 export type Evidence = {
@@ -196,6 +343,8 @@ export type Evidence = {
   source_name: string;
   source_url: string;
   discovery_record: DiscoveryRecord | null;
+  relevance?: "relevant" | "adjacent" | "irrelevant" | "unreviewed";
+  relevance_reason?: string;
 };
 
 export type AttachmentSummary = {
@@ -481,6 +630,24 @@ export const api = {
     ),
   messages: (sessionId: string) =>
     request<ChatMessage[]>(`/chat/sessions/${sessionId}/messages`),
+  createBranch: (sessionId: string, sourceMessageId: string, name = "") =>
+    request<ChatSessionSummary & { branch_path: ChatSessionSummary[] }>(
+      `/chat/sessions/${sessionId}/branches`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          source_message_id: sourceMessageId,
+          name,
+          source: "user",
+        }),
+      },
+    ),
+  branchPath: (sessionId: string) =>
+    request<ChatSessionSummary[]>(`/chat/sessions/${sessionId}/branch-path`),
+  archiveSession: (sessionId: string) =>
+    request<ChatSessionSummary>(`/chat/sessions/${sessionId}/archive`, {
+      method: "POST",
+    }),
   sendMessage: (
     sessionId: string,
     content: string,
@@ -514,15 +681,36 @@ export const api = {
   steerResearchRun: (
     runId: string,
     content: string,
-    kind: "constraint" | "follow_up" = "constraint",
+    kind:
+      | "constraint"
+      | "correction"
+      | "clarification"
+      | "follow_up" = "constraint",
+    targetBranchId = "",
   ) =>
-    request<{ run_id: string; queued: boolean }>(
+    request<{ run_id: string; queued: boolean; follow_up?: ResearchFollowUp }>(
       `/research/runs/${runId}/steer`,
       {
         method: "POST",
-        body: JSON.stringify({ content, kind }),
+        body: JSON.stringify({
+          content,
+          kind,
+          target_branch_id: targetBranchId,
+        }),
       },
     ),
+  followUps: (sessionId: string) =>
+    request<ResearchFollowUp[]>(`/chat/sessions/${sessionId}/follow-ups`),
+  reorderFollowUps: (sessionId: string, orderedIds: string[]) =>
+    request<ResearchFollowUp[]>(
+      `/chat/sessions/${sessionId}/follow-ups/order`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ ordered_ids: orderedIds }),
+      },
+    ),
+  deleteFollowUp: (followUpId: string) =>
+    request<void>(`/research/follow-ups/${followUpId}`, { method: "DELETE" }),
   approveResearchAction: (runId: string, approvalId: string) =>
     request<{ run_id: string; batch_id: string; approval: ResearchApproval }>(
       `/research/runs/${runId}/approvals/${approvalId}`,

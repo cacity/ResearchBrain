@@ -295,6 +295,12 @@ class ChatSession(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     library_id: Mapped[str] = mapped_column(ForeignKey("libraries.id", ondelete="CASCADE"), nullable=False)
     title: Mapped[str] = mapped_column(String(300), nullable=False, default="New research")
+    parent_session_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    root_message_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    branch_source_message_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    branch_name: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    branch_source: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -307,13 +313,17 @@ class ChatMessage(Base):
         ForeignKey("chat_sessions.id", ondelete="CASCADE"),
         nullable=False,
     )
+    parent_message_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
     role: Mapped[str] = mapped_column(String(30), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
-    __table_args__ = (Index("ix_chat_message_session_created", "session_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_chat_message_session_created", "session_id", "created_at"),
+        Index("ix_chat_message_parent", "parent_message_id"),
+    )
 
 
 class ResearchRun(Base):
@@ -400,6 +410,116 @@ class ResearchEvent(Base):
         UniqueConstraint("run_id", "sequence", name="uq_research_event_sequence"),
         Index("ix_research_event_run_sequence", "run_id", "sequence"),
     )
+
+
+class ResearchTurn(Base):
+    __tablename__ = "research_turns"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="agent")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="running")
+    action: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    stop_decision: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_research_turn_sequence"),
+        Index("ix_research_turn_run_status", "run_id", "status"),
+    )
+
+
+class ResearchToolCall(Base):
+    __tablename__ = "research_tool_calls"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    turn_id: Mapped[str] = mapped_column(
+        ForeignKey("research_turns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    call_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    arguments: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    result: Mapped[dict | list | str | int | float | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="running")
+    readonly: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    idempotency_key: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    error_code: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "call_id", name="uq_research_tool_call_id"),
+        Index("ix_research_tool_call_turn", "turn_id", "status"),
+        Index("ix_research_tool_call_idempotency", "run_id", "idempotency_key"),
+    )
+
+
+class ResearchCheckpoint(Base):
+    __tablename__ = "research_checkpoints"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    turn_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    phase: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    action: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    tool_results: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    coverage: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    budgets: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    safe: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_research_checkpoint_sequence"),
+        Index("ix_research_checkpoint_run_turn", "run_id", "turn_sequence"),
+    )
+
+
+class ResearchFollowUp(Base):
+    __tablename__ = "research_follow_ups"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_run_id: Mapped[str] = mapped_column(
+        ForeignKey("research_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_message_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    target_session_id: Mapped[str] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_branch_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="local")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
+    started_run_id: Mapped[str] = mapped_column(String(36), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_research_follow_up_target_queue", "target_session_id", "status", "position"),)
 
 
 class ResearchEvidence(Base):

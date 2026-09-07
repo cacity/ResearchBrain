@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -14,10 +14,14 @@ from researchbrain.db.models import (
     ChatMessage,
     ChatSession,
     ChatSessionMemory,
+    ResearchCheckpoint,
     ResearchEvent,
     ResearchEvidence,
+    ResearchFollowUp,
     ResearchRun,
     ResearchStep,
+    ResearchToolCall,
+    ResearchTurn,
 )
 
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
@@ -106,6 +110,8 @@ class ResearchRunStore:
                     "dois": dois,
                     "reason": str(payload.get("reason") or ""),
                     "status": "pending",
+                    "created_at": now.isoformat(),
+                    "expires_at": (now + timedelta(hours=24)).isoformat(),
                 }
                 if not existing:
                     run.approvals = [*run.approvals, approval]
@@ -169,6 +175,167 @@ class ResearchRunStore:
                     step.status = "completed"
                     step.output = payload.get("output") or {}
                     step.finished_at = now
+            elif event_type == "plan_ready":
+                run.plan = {
+                    "research_intent": payload.get("research_intent") or {},
+                    "subquestions": payload.get("subquestions") or [],
+                    "queries": payload.get("queries") or [],
+                    "query_specs": payload.get("query_specs") or [],
+                    "topic_terms": payload.get("topic_terms") or [],
+                    "excluded_terms": payload.get("excluded_terms") or [],
+                }
+            elif event_type == "coverage_updated":
+                run.coverage = payload.get("coverage") or []
+            elif event_type == "agent_turn_started":
+                turn_sequence = (
+                    int(
+                        session.scalar(
+                            select(func.max(ResearchTurn.sequence)).where(ResearchTurn.run_id == run_id)
+                        )
+                        or 0
+                    )
+                    + 1
+                )
+                turn = ResearchTurn(
+                    run_id=run_id,
+                    sequence=turn_sequence,
+                    source=str(payload.get("source") or "agent"),
+                    context=payload.get("context") or {},
+                )
+                session.add(turn)
+                session.flush()
+                event_payload["turn_id"] = turn.id
+                event_payload["turn_sequence"] = turn_sequence
+            elif event_type == "agent_action":
+                turn = _latest_turn(session, run_id, running_only=True)
+                if turn:
+                    turn.action = dict(payload)
+                    event_payload["turn_id"] = turn.id
+                    event_payload["turn_sequence"] = turn.sequence
+            elif event_type == "tool_execution_start":
+                turn = _latest_turn(session, run_id, running_only=True)
+                if turn:
+                    arguments = payload.get("arguments") or {}
+                    action_calls = {
+                        str(value.get("id") or ""): value for value in (turn.action.get("tool_calls") or [])
+                    }
+                    declared = action_calls.get(str(payload.get("call_id") or ""), {})
+                    readonly = not bool(declared.get("permission") == "write")
+                    idempotency_key = str(arguments.get("idempotency_key") or "")
+                    if not idempotency_key:
+                        idempotency_key = _stored_tool_key(str(payload.get("tool") or ""), arguments)
+                    tool_call = ResearchToolCall(
+                        run_id=run_id,
+                        turn_id=turn.id,
+                        call_id=str(payload.get("call_id") or ""),
+                        tool_name=str(payload.get("tool") or ""),
+                        arguments=arguments,
+                        readonly=readonly,
+                        idempotency_key=idempotency_key,
+                    )
+                    session.add(tool_call)
+                    event_payload["turn_id"] = turn.id
+                    event_payload["turn_sequence"] = turn.sequence
+            elif event_type == "tool_result":
+                tool_call = session.scalar(
+                    select(ResearchToolCall).where(
+                        ResearchToolCall.run_id == run_id,
+                        ResearchToolCall.call_id == str(payload.get("tool_call_id") or ""),
+                    )
+                )
+                if tool_call:
+                    tool_call.status = str(payload.get("status") or "failed")
+                    tool_call.result = payload.get("result")
+                    error = payload.get("error") or {}
+                    tool_call.error_code = str(error.get("code") or "")
+                    tool_call.error_message = str(error.get("message") or "")
+                    tool_call.finished_at = now
+                    event_payload["turn_id"] = tool_call.turn_id
+            elif event_type == "agent_turn_completed":
+                turn = _latest_turn(session, run_id, running_only=True)
+                if turn:
+                    turn.status = str(payload.get("status") or "completed")
+                    turn.error_code = str(payload.get("error_code") or "")
+                    turn.stop_decision = payload.get("stop_decision") or {}
+                    turn.finished_at = now
+                    calls = list(
+                        session.scalars(
+                            select(ResearchToolCall)
+                            .where(ResearchToolCall.turn_id == turn.id)
+                            .order_by(ResearchToolCall.started_at)
+                        )
+                    )
+                    checkpoint_sequence = (
+                        int(
+                            session.scalar(
+                                select(func.max(ResearchCheckpoint.sequence)).where(
+                                    ResearchCheckpoint.run_id == run_id
+                                )
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                    checkpoint = ResearchCheckpoint(
+                        run_id=run_id,
+                        sequence=checkpoint_sequence,
+                        turn_sequence=turn.sequence,
+                        phase=run.phase,
+                        action=turn.action,
+                        tool_results=[_tool_call_dict(value) for value in calls],
+                        coverage=payload.get("coverage") or run.coverage or [],
+                        budgets=payload.get("budgets") or run.budgets or {},
+                        context=payload.get("context") or turn.context or {},
+                        safe=all(value.status in {"completed", "failed"} for value in calls),
+                    )
+                    session.add(checkpoint)
+                    session.flush()
+                    event_payload["turn_id"] = turn.id
+                    event_payload["turn_sequence"] = turn.sequence
+                    event_payload["checkpoint_id"] = checkpoint.id
+                    event_payload["checkpoint_sequence"] = checkpoint_sequence
+            elif event_type == "state_checkpoint":
+                checkpoint_sequence = (
+                    int(
+                        session.scalar(
+                            select(func.max(ResearchCheckpoint.sequence)).where(
+                                ResearchCheckpoint.run_id == run_id
+                            )
+                        )
+                        or 0
+                    )
+                    + 1
+                )
+                turn_sequence = int(
+                    session.scalar(
+                        select(func.max(ResearchTurn.sequence)).where(
+                            ResearchTurn.run_id == run_id,
+                            ResearchTurn.status != "running",
+                        )
+                    )
+                    or 0
+                )
+                checkpoint = ResearchCheckpoint(
+                    run_id=run_id,
+                    sequence=checkpoint_sequence,
+                    turn_sequence=turn_sequence,
+                    phase=str(payload.get("phase") or run.phase),
+                    action={"action": "resume_phase", "phase": payload.get("phase") or run.phase},
+                    tool_results=[],
+                    coverage=payload.get("coverage") or run.coverage or [],
+                    budgets=payload.get("budgets") or run.budgets or {},
+                    context=payload.get("context") or {},
+                    safe=True,
+                )
+                session.add(checkpoint)
+                session.flush()
+                event_payload["checkpoint_id"] = checkpoint.id
+                event_payload["checkpoint_sequence"] = checkpoint_sequence
+                event_payload["turn_sequence"] = turn_sequence
+            elif event_type == "stop_decision":
+                turn = _latest_turn(session, run_id, running_only=False)
+                if turn:
+                    turn.stop_decision = dict(payload)
             session.flush()
             return {"type": event_type, **event_payload, "created_at": now.isoformat()}
 
@@ -189,6 +356,40 @@ class ResearchRunStore:
                 }
                 for event in events
             ]
+
+    def list_turns(self, run_id: str) -> list[dict[str, Any]]:
+        with self.database.session() as session:
+            turns = list(
+                session.scalars(
+                    select(ResearchTurn).where(ResearchTurn.run_id == run_id).order_by(ResearchTurn.sequence)
+                )
+            )
+            return [_turn_dict(session, value) for value in turns]
+
+    def latest_checkpoint(self, run_id: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            checkpoint = session.scalar(
+                select(ResearchCheckpoint)
+                .where(ResearchCheckpoint.run_id == run_id, ResearchCheckpoint.safe.is_(True))
+                .order_by(ResearchCheckpoint.sequence.desc())
+                .limit(1)
+            )
+            return _checkpoint_dict(checkpoint) if checkpoint else None
+
+    def readonly_tool_cache(self, run_id: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            calls = list(
+                session.scalars(
+                    select(ResearchToolCall)
+                    .where(
+                        ResearchToolCall.run_id == run_id,
+                        ResearchToolCall.readonly.is_(True),
+                        ResearchToolCall.status == "completed",
+                    )
+                    .order_by(ResearchToolCall.finished_at)
+                )
+            )
+            return {value.idempotency_key: value.result for value in calls if value.idempotency_key}
 
     def has_terminal_event(self, run_id: str) -> bool:
         with self.database.session() as session:
@@ -212,6 +413,7 @@ class ResearchRunStore:
                 raise ValueError("research run not found")
             message = ChatMessage(
                 session_id=run.session_id,
+                parent_message_id=run.user_message_id,
                 role="assistant",
                 content=answer.answer,
                 citations=citations,
@@ -253,6 +455,7 @@ class ResearchRunStore:
                         page_end=evidence.page_end,
                         score=evidence.score,
                         discovery_record=evidence.discovery_record or {},
+                        selected=evidence.relevance in {"relevant", "unreviewed"},
                         cited=evidence.id in cited_ids,
                     )
                 )
@@ -345,7 +548,7 @@ class ResearchRunStore:
             run.finished_at = None
             run.updated_at = datetime.now(UTC)
 
-    def approve(self, run_id: str, approval_id: str, batch_id: str) -> dict[str, Any]:
+    def begin_approval(self, run_id: str, approval_id: str) -> dict[str, Any]:
         with self.database.session() as session:
             run = session.get(ResearchRun, run_id)
             if not run:
@@ -356,6 +559,58 @@ class ResearchRunStore:
                 raise ValueError("approval not found")
             if target.get("status") != "pending":
                 raise ValueError("approval has already been handled")
+            expires_at = _parse_datetime(str(target.get("expires_at") or ""))
+            if expires_at and expires_at <= datetime.now(UTC):
+                target["status"] = "expired"
+                run.approvals = approvals
+                raise ValueError("approval has expired")
+            target["status"] = "executing"
+            target["authorized_at"] = datetime.now(UTC).isoformat()
+            run.approvals = approvals
+            run.updated_at = datetime.now(UTC)
+            return target
+
+    def expire_approval(self, run_id: str, approval_id: str) -> None:
+        with self.database.session() as session:
+            run = session.get(ResearchRun, run_id)
+            if not run:
+                return
+            approvals = [dict(value) for value in run.approvals]
+            target = next((value for value in approvals if value.get("id") == approval_id), None)
+            if target and target.get("status") == "pending":
+                target["status"] = "expired"
+                run.approvals = approvals
+                run.updated_at = datetime.now(UTC)
+
+    def release_approval(self, run_id: str, approval_id: str, error: str) -> None:
+        with self.database.session() as session:
+            run = session.get(ResearchRun, run_id)
+            if not run:
+                return
+            approvals = [dict(value) for value in run.approvals]
+            target = next((value for value in approvals if value.get("id") == approval_id), None)
+            if target and target.get("status") == "executing":
+                target["status"] = "pending"
+                target["last_error"] = error[:1000]
+                run.approvals = approvals
+                run.updated_at = datetime.now(UTC)
+
+    def approve(self, run_id: str, approval_id: str, batch_id: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            run = session.get(ResearchRun, run_id)
+            if not run:
+                raise ValueError("research run not found")
+            approvals = [dict(value) for value in run.approvals]
+            target = next((value for value in approvals if value.get("id") == approval_id), None)
+            if not target:
+                raise ValueError("approval not found")
+            if target.get("status") not in {"pending", "executing"}:
+                raise ValueError("approval has already been handled")
+            expires_at = _parse_datetime(str(target.get("expires_at") or ""))
+            if expires_at and expires_at <= datetime.now(UTC):
+                target["status"] = "expired"
+                run.approvals = approvals
+                raise ValueError("approval has expired")
             target["status"] = "approved"
             target["batch_id"] = batch_id
             target["approved_at"] = datetime.now(UTC).isoformat()
@@ -379,6 +634,177 @@ class ResearchRunStore:
             run.approvals = approvals
             run.updated_at = datetime.now(UTC)
             return target
+
+    def enqueue_follow_up(
+        self,
+        source_run_id: str,
+        content: str,
+        *,
+        source_message_id: str = "",
+        target_session_id: str = "",
+        target_branch_id: str = "",
+    ) -> dict[str, Any]:
+        with self.database.session() as session:
+            run = session.get(ResearchRun, source_run_id)
+            if not run:
+                raise ValueError("research run not found")
+            target_id = target_branch_id or target_session_id or run.session_id
+            source_chat = session.get(ChatSession, run.session_id)
+            target_chat = session.get(ChatSession, target_id)
+            if not source_chat or not target_chat or source_chat.library_id != target_chat.library_id:
+                raise ValueError("follow-up target must be a branch in the same library")
+            position = (
+                int(
+                    session.scalar(
+                        select(func.max(ResearchFollowUp.position)).where(
+                            ResearchFollowUp.target_session_id == target_id,
+                            ResearchFollowUp.status == "queued",
+                        )
+                    )
+                    or 0
+                )
+                + 1
+            )
+            follow_up = ResearchFollowUp(
+                source_run_id=source_run_id,
+                source_message_id=source_message_id or run.user_message_id,
+                target_session_id=target_id,
+                target_branch_id=target_branch_id,
+                position=position,
+                content=content.strip(),
+                mode=run.mode,
+            )
+            if not follow_up.content:
+                raise ValueError("follow-up content is empty")
+            session.add(follow_up)
+            session.flush()
+            return _follow_up_dict(follow_up)
+
+    def list_follow_ups(self, session_id: str, *, include_finished: bool = False) -> list[dict[str, Any]]:
+        with self.database.session() as session:
+            statement = select(ResearchFollowUp).where(ResearchFollowUp.target_session_id == session_id)
+            if not include_finished:
+                statement = statement.where(ResearchFollowUp.status.in_(["queued", "starting", "running"]))
+            values = list(
+                session.scalars(statement.order_by(ResearchFollowUp.position, ResearchFollowUp.created_at))
+            )
+            return [_follow_up_dict(value) for value in values]
+
+    def reorder_follow_ups(self, session_id: str, ordered_ids: list[str]) -> list[dict[str, Any]]:
+        with self.database.session() as session:
+            queued = list(
+                session.scalars(
+                    select(ResearchFollowUp)
+                    .where(
+                        ResearchFollowUp.target_session_id == session_id,
+                        ResearchFollowUp.status == "queued",
+                    )
+                    .order_by(ResearchFollowUp.position, ResearchFollowUp.created_at)
+                )
+            )
+            by_id = {value.id: value for value in queued}
+            if set(ordered_ids) != set(by_id) or len(ordered_ids) != len(by_id):
+                raise ValueError("ordered_ids must contain every queued follow-up exactly once")
+            for position, follow_up_id in enumerate(ordered_ids, 1):
+                by_id[follow_up_id].position = position
+                by_id[follow_up_id].updated_at = datetime.now(UTC)
+            session.flush()
+            return [_follow_up_dict(by_id[value]) for value in ordered_ids]
+
+    def delete_follow_up(self, follow_up_id: str) -> None:
+        with self.database.session() as session:
+            follow_up = session.get(ResearchFollowUp, follow_up_id)
+            if not follow_up:
+                raise ValueError("follow-up not found")
+            if follow_up.status != "queued":
+                raise ValueError("only queued follow-ups can be deleted")
+            target_id = follow_up.target_session_id
+            session.delete(follow_up)
+            session.flush()
+            queued = list(
+                session.scalars(
+                    select(ResearchFollowUp)
+                    .where(
+                        ResearchFollowUp.target_session_id == target_id,
+                        ResearchFollowUp.status == "queued",
+                    )
+                    .order_by(ResearchFollowUp.position, ResearchFollowUp.created_at)
+                )
+            )
+            for position, value in enumerate(queued, 1):
+                value.position = position
+
+    def queued_follow_up_targets(self, source_run_id: str) -> list[str]:
+        with self.database.session() as session:
+            return list(
+                dict.fromkeys(
+                    session.scalars(
+                        select(ResearchFollowUp.target_session_id)
+                        .where(
+                            ResearchFollowUp.source_run_id == source_run_id,
+                            ResearchFollowUp.status == "queued",
+                        )
+                        .order_by(ResearchFollowUp.position)
+                    )
+                )
+            )
+
+    def claim_next_follow_up(self, session_id: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            active = session.scalar(
+                select(ResearchRun.id).where(
+                    ResearchRun.session_id == session_id,
+                    ResearchRun.status.in_(["queued", "running", "cancelling"]),
+                )
+            )
+            if active:
+                return None
+            follow_up = session.scalar(
+                select(ResearchFollowUp)
+                .where(
+                    ResearchFollowUp.target_session_id == session_id,
+                    ResearchFollowUp.status == "queued",
+                )
+                .order_by(ResearchFollowUp.position, ResearchFollowUp.created_at)
+                .limit(1)
+            )
+            if not follow_up:
+                return None
+            follow_up.status = "starting"
+            follow_up.updated_at = datetime.now(UTC)
+            session.flush()
+            return _follow_up_dict(follow_up)
+
+    def mark_follow_up_running(self, follow_up_id: str, run_id: str) -> dict[str, Any]:
+        with self.database.session() as session:
+            follow_up = session.get(ResearchFollowUp, follow_up_id)
+            if not follow_up or follow_up.status != "starting":
+                raise ValueError("follow-up is not ready to start")
+            follow_up.status = "running"
+            follow_up.started_run_id = run_id
+            follow_up.updated_at = datetime.now(UTC)
+            session.flush()
+            return _follow_up_dict(follow_up)
+
+    def finish_follow_up_for_run(self, run_id: str, status: str) -> dict[str, Any] | None:
+        with self.database.session() as session:
+            follow_up = session.scalar(
+                select(ResearchFollowUp).where(ResearchFollowUp.started_run_id == run_id).limit(1)
+            )
+            if not follow_up:
+                return None
+            follow_up.status = "completed" if status == "completed" else "failed"
+            follow_up.finished_at = datetime.now(UTC)
+            follow_up.updated_at = datetime.now(UTC)
+            session.flush()
+            return _follow_up_dict(follow_up)
+
+    def release_follow_up(self, follow_up_id: str) -> None:
+        with self.database.session() as session:
+            follow_up = session.get(ResearchFollowUp, follow_up_id)
+            if follow_up and follow_up.status == "starting":
+                follow_up.status = "queued"
+                follow_up.updated_at = datetime.now(UTC)
 
     def load_memory(self, session_id: str) -> dict[str, Any]:
         with self.database.session() as session:
@@ -425,6 +851,88 @@ class ResearchRunStore:
         memory.updated_at = datetime.now(UTC)
 
 
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _latest_turn(session, run_id: str, *, running_only: bool) -> ResearchTurn | None:
+    statement = select(ResearchTurn).where(ResearchTurn.run_id == run_id)
+    if running_only:
+        statement = statement.where(ResearchTurn.status == "running")
+    return session.scalar(statement.order_by(ResearchTurn.sequence.desc()).limit(1))
+
+
+def _stored_tool_key(name: str, arguments: dict[str, Any]) -> str:
+    import json
+
+    serialized = json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(f"{name}:{serialized}".encode()).hexdigest()
+
+
+def _tool_call_dict(value: ResearchToolCall) -> dict[str, Any]:
+    return {
+        "call_id": value.call_id,
+        "tool": value.tool_name,
+        "arguments": value.arguments,
+        "result": value.result,
+        "status": value.status,
+        "readonly": value.readonly,
+        "idempotency_key": value.idempotency_key,
+        "error": (
+            {"code": value.error_code, "message": value.error_message}
+            if value.error_code or value.error_message
+            else None
+        ),
+    }
+
+
+def _turn_dict(session, value: ResearchTurn) -> dict[str, Any]:
+    calls = list(
+        session.scalars(
+            select(ResearchToolCall)
+            .where(ResearchToolCall.turn_id == value.id)
+            .order_by(ResearchToolCall.started_at)
+        )
+    )
+    return {
+        "id": value.id,
+        "run_id": value.run_id,
+        "sequence": value.sequence,
+        "source": value.source,
+        "status": value.status,
+        "action": value.action,
+        "context": value.context,
+        "stop_decision": value.stop_decision,
+        "error_code": value.error_code,
+        "tool_calls": [_tool_call_dict(call) for call in calls],
+        "started_at": value.started_at.isoformat(),
+        "finished_at": value.finished_at.isoformat() if value.finished_at else None,
+    }
+
+
+def _checkpoint_dict(value: ResearchCheckpoint) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "run_id": value.run_id,
+        "sequence": value.sequence,
+        "turn_sequence": value.turn_sequence,
+        "phase": value.phase,
+        "action": value.action,
+        "tool_results": value.tool_results,
+        "coverage": value.coverage,
+        "budgets": value.budgets,
+        "context": value.context,
+        "safe": value.safe,
+        "created_at": value.created_at.isoformat(),
+    }
+
+
 def _run_dict(run: ResearchRun) -> dict[str, Any]:
     return {
         "id": run.id,
@@ -446,6 +954,24 @@ def _run_dict(run: ResearchRun) -> dict[str, Any]:
         "created_at": run.created_at.isoformat(),
         "updated_at": run.updated_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+def _follow_up_dict(value: ResearchFollowUp) -> dict[str, Any]:
+    return {
+        "id": value.id,
+        "source_run_id": value.source_run_id,
+        "source_message_id": value.source_message_id,
+        "target_session_id": value.target_session_id,
+        "target_branch_id": value.target_branch_id,
+        "position": value.position,
+        "content": value.content,
+        "mode": value.mode,
+        "status": value.status,
+        "started_run_id": value.started_run_id,
+        "created_at": value.created_at.isoformat(),
+        "updated_at": value.updated_at.isoformat(),
+        "finished_at": value.finished_at.isoformat() if value.finished_at else None,
     }
 
 

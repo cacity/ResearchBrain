@@ -37,6 +37,23 @@ parent PID; Tauri also terminates the process tree on window destruction.
 5. Search performs keyword and vector retrieval, combines ranks with RRF, and returns evidence locations.
 6. DeepSeek receives only the selected evidence and must return an allow-listed set of citation IDs.
 
+## Research orchestration
+
+The V2 research path uses a bounded action loop rather than a single retrieval-augmented prompt. DeepSeek
+selects one schema-validated `AgentAction` at each controller boundary. The host then enforces the phase
+allow-list, tool schema, library scope, network policy, approval state, idempotency key, and remaining budget.
+Only `ResearchToolRegistry` can create a `ToolResultMessage`; model output cannot fabricate tool observations.
+
+A run persists its intent, bilingual source-specific query plan, evidence ledger, coverage matrix, claims,
+review findings, tool calls, stop decisions, and event stream. Phase checkpoints additionally persist counters,
+recent tool-result context, draft, and review state. A retry restores the latest safe checkpoint and skips
+completed intake, planning, and retrieval work. Read-only calls are reusable; write calls still require valid
+approval and idempotency checks.
+
+Parallel scouts are restricted subagents. Each receives one subquestion, a bounded context, an independent
+step/tool budget, and a read-only allow-list. Its tool observations are fed into a subsequent model turn, and
+the parent accepts only evidence identifiers already present in the current ledger.
+
 ## Ownership boundaries
 
 - `src/researchbrain/db`: schema and migrations.

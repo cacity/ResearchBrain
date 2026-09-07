@@ -17,8 +17,10 @@ class FixtureClient:
     def __init__(self, responses):
         self.responses = list(responses)
         self.prompts: list[str] = []
+        self.systems: list[str] = []
 
-    async def generate_json(self, _system, prompt):
+    async def generate_json(self, system, prompt):
+        self.systems.append(system)
         self.prompts.append(prompt)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
@@ -40,6 +42,8 @@ async def test_gateway_repairs_schema_once():
 
     assert result.answer == "valid"
     assert "failed schema validation" in client.prompts[1]
+    assert '"required":["answer"]' in client.systems[0]
+    assert "exact JSON Schema" in client.systems[0]
 
 
 @pytest.mark.asyncio

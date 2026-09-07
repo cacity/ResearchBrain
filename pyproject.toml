@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "researchbrain"
-version = "0.3.0"
+version = "0.4.6"
 description = "Local-first literature library and evidence-grounded research agent"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -69,6 +69,21 @@ addopts = "-q --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+  "research_baseline: baseline quality-gate tests for module-specific groups, fixed-set metrics, and blind-review harnesses",
+  "research_clarification: blocking ambiguity and resumable ask_user tests",
+  "research_local_retrieval_ui: candidate inclusion/exclusion explanation UI tests",
+  "research_doi_pdf_loop: DOI/PDF import, parsing, vectorization, approval, and retry loop tests",
+  "research_agent_action_loop: AgentAction, tool_result, turn persistence, recovery, and budget tests",
+  "research_tool_policy_hooks: beforeToolCall/afterToolCall policy, approval, idempotency, and injection tests",
+  "research_steering_abort: steering constraint/correction/follow_up, abort, and SSE reconnect tests",
+  "research_context_compaction: tokenizer budgeting, compaction checkpoints, memory, and recovery tests",
+  "research_session_branching: chat tree, branch inheritance, deletion, concurrency, and history tests",
+  "research_subagent_loop: subagent task, budget, action/tool loop, aggregation, cancellation, and A/B tests",
+  "research_followup_recovery: follow-up queue, checkpoint resume, approval validity, and crash recovery tests",
+  "research_diagnostics_ui: intent/query/action/claim/task/branch diagnostic UI and accessibility tests",
+  "research_release_acceptance: final release quality gates, real-model smoke tests, packaging, docs, and review tests",
+]
 
 [tool.ruff]
 line-length = 110

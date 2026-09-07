@@ -1,5 +1,9 @@
 # ResearchBrain 多轮研究编排器实施方案
 
+> 本文档记录架构设计和阶段交付，不再作为逐项完成状态的依据。当前真实完成状态、缺失能力和
+> 验收条件见 [研究 Agent 实施清单](research-agent-implementation-checklist.md)。只有清单中已通过
+> 实际运行路径和测试验证的条目才标记为完成。
+
 ## 1. 目标
 
 在保留现有文献库、Zotero 同步、DOI/PDF 获取、MinerU/PyMuPDF 解析、MiniMax 向量检索、
@@ -452,7 +456,7 @@ Reviewer 输出结构化问题列表，而不是重新自由写一篇答案：
 
 交付：长对话、失败重试和中途补充要求稳定可用。
 
-### Phase 5：受控 Subagent，已实现但默认关闭
+### Phase 5：受控 Subagent，已实现并默认启用
 
 - planner 可并行派发 2-4 个只读 scout，分别处理不同子问题或来源。
 - 每个 scout 只得到任务片段、预算和只读工具，不得到写权限。
@@ -461,8 +465,10 @@ Reviewer 输出结构化问题列表，而不是重新自由写一篇答案：
 
 交付：复杂综述的覆盖率提升；若 A/B 测试收益不明显，保持关闭。
 
-Phase 0-4 已在 `feature/pi-research-orchestrator` 实现。Phase 5 通过
-`RESEARCHBRAIN_PARALLEL_SCOUTS=1` 启用，仍需使用固定质量集独立评估收益，不作为默认能力。
+Phase 0-5 已在 `feature/pi-research-orchestrator` 实现。主循环由模型选择结构化 `AgentAction`，
+宿主负责工具、阶段、预算和权限门禁；Subagent 的工具观察会进入下一次模型调用。通过
+`RESEARCHBRAIN_PARALLEL_SCOUTS=0` 可关闭并行 Scout。固定质量集的真实模型收益与成本仍属于发布
+验收，而不是代码完成条件。Pi 模式的准确采用范围见 [Pi 模式采用说明](pi-patterns.md)。
 
 ## 18. 建议目录和代码落点
 
@@ -473,9 +479,9 @@ src/researchbrain/
     state_machine.py    # 合法转换和预算
     orchestrator.py     # 主循环
     evidence.py         # EvidenceLedger 和等级规则
-    context.py          # 会话记忆与压缩
+    context.py          # 会话记忆裁剪与证据权重隔离
     events.py           # 事件类型与事件存储
-    tools.py            # 受控工具适配层
+    tools.py            # 受控工具注册、校验、预算和生命周期事件
     reviewer.py         # 确定性校验
   agent/
     gateway.py          # ModelGateway

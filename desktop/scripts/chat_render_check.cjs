@@ -108,23 +108,72 @@ const assistantMessage = {
         ) {
             const events = [
                 {
-                    type: "phase_started",
+                    type: "plan_ready",
                     run_id: "test-run",
                     sequence: 1,
+                    subquestions: [
+                        {
+                            id: "Q1",
+                            question: "核对球谐分析的数据与方法",
+                            required_level: "fulltext_section",
+                        },
+                    ],
+                    queries: ["spherical harmonic analysis methods"],
+                    topic_terms: ["球谐", "spherical harmonic"],
+                    excluded_terms: ["多波束", "multibeam sonar"],
+                },
+                {
+                    type: "phase_started",
+                    run_id: "test-run",
+                    sequence: 2,
                     phase: "local_search",
                     label: "正在检索本地文库",
                 },
                 {
+                    type: "evidence_screened",
+                    run_id: "test-run",
+                    sequence: 3,
+                    counts: { relevant: 4, adjacent: 1, irrelevant: 1 },
+                    judgments: [
+                        {
+                            evidence_id: "E5",
+                            relevance: "irrelevant",
+                            reason: "多波束声呐与球谐分析不是同一研究主题",
+                        },
+                    ],
+                },
+                {
+                    type: "tool_execution_start",
+                    run_id: "test-run",
+                    sequence: 31,
+                    call_id: "call-1",
+                    tool: "search_library",
+                },
+                {
+                    type: "tool_execution_end",
+                    run_id: "test-run",
+                    sequence: 32,
+                    call_id: "call-1",
+                    tool: "search_library",
+                    status: "completed",
+                },
+                {
                     type: "evidence_updated",
                     run_id: "test-run",
-                    sequence: 2,
+                    sequence: 4,
                     count: 6,
                     levels: { fulltext_page: 4, structured_abstract: 2 },
                 },
                 {
+                    type: "scouts_started",
+                    run_id: "test-run",
+                    sequence: 5,
+                    count: 1,
+                },
+                {
                     type: "coverage_updated",
                     run_id: "test-run",
-                    sequence: 3,
+                    sequence: 6,
                     counts: {
                         covered: 2,
                         partial: 1,
@@ -134,7 +183,7 @@ const assistantMessage = {
                 {
                     type: "approval_available",
                     run_id: "test-run",
-                    sequence: 4,
+                    sequence: 7,
                     approval: {
                         id: "approval-1",
                         action: "import_dois",
@@ -146,13 +195,20 @@ const assistantMessage = {
                 {
                     type: "answer_delta",
                     run_id: "test-run",
-                    sequence: 5,
+                    sequence: 8,
                     delta: assistantMessage.content,
+                },
+                {
+                    type: "review_ready",
+                    run_id: "test-run",
+                    sequence: 9,
+                    blocking: 0,
+                    warnings: 0,
                 },
                 {
                     type: "run_completed",
                     run_id: "test-run",
-                    sequence: 6,
+                    sequence: 10,
                     message_id: "assistant-message",
                 },
             ];
@@ -211,6 +267,30 @@ const assistantMessage = {
     await page.getByTitle("发送").click();
     await page.locator(".message.assistant").waitFor();
     await page.getByText("发现 1 篇可导入文献").waitFor();
+
+    const trace = page.locator(".research-trace");
+    await trace.waitFor();
+    if (!(await trace.getAttribute("open"))) {
+        await trace.locator("summary").click();
+    }
+    const traceText = await trace.innerText();
+    for (const expected of [
+        "核对球谐分析的数据与方法",
+        "spherical harmonic analysis methods",
+        "必须相关：球谐 · spherical harmonic",
+        "跨域排除：多波束 · multibeam sonar",
+        "受控工具循环",
+        "search_library",
+        "调用 1",
+        "排除 1",
+        "多波束声呐与球谐分析不是同一研究主题",
+        "证据侦察 1 个子问题",
+        "审查：阻断 0，警告 0",
+    ]) {
+        if (!traceText.includes(expected)) {
+            throw new Error(`Research trace is missing: ${expected}`);
+        }
+    }
 
     const answer = page.locator(".message.assistant");
     if ((await answer.locator("strong").first().textContent()) !== "主要结论") {

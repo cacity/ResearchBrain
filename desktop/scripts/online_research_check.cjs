@@ -12,8 +12,10 @@ function json(route, body) {
     });
 }
 
+let browser;
+
 (async () => {
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
         headless: true,
         ...(process.env.RB_BROWSER_PATH
             ? { executablePath: process.env.RB_BROWSER_PATH }
@@ -83,8 +85,43 @@ function json(route, body) {
             return json(route, { id: "session" });
         }
         if (
-            pathname === "/v1/chat/sessions/session/messages" &&
+            pathname === "/v1/chat/sessions/session/runs" &&
             request.method() === "POST"
+        ) {
+            return json(route, {
+                id: "run",
+                session_id: "session",
+                status: "running",
+                phase: "queued",
+                mode: "online",
+                approvals: [],
+            });
+        }
+        if (pathname === "/v1/research/runs/run/events") {
+            return route.fulfill({
+                status: 200,
+                contentType: "text/event-stream",
+                body:
+                    'event: answer_delta\ndata: {"type":"answer_delta","delta":"在线摘要支持该结论 [W1]。"}\n\n' +
+                    'event: run_completed\ndata: {"type":"run_completed","message_id":"assistant"}\n\n',
+            });
+        }
+        if (pathname === "/v1/research/runs/run") {
+            return json(route, {
+                id: "run",
+                session_id: "session",
+                status: "completed",
+                phase: "completed",
+                mode: "online",
+                approvals: [],
+            });
+        }
+        if (pathname === "/v1/chat/sessions/session/follow-ups") {
+            return json(route, []);
+        }
+        if (
+            pathname === "/v1/chat/sessions/session/messages" &&
+            request.method() === "GET"
         ) {
             const discoveryRecord = {
                 source: "crossref",
@@ -102,29 +139,38 @@ function json(route, body) {
                 fulltext_url: "",
                 publication_type: "article-journal",
             };
-            return json(route, {
-                id: "assistant",
-                role: "assistant",
-                content: "在线摘要支持该结论 [W1]。",
-                citations: [
-                    {
-                        id: "W1",
-                        chunk_id: "web:crossref:10.1000/online",
-                        item_id: "",
-                        title: discoveryRecord.title,
-                        text: `Title: ${discoveryRecord.title}\nDOI: ${discoveryRecord.doi}`,
-                        section: "online title/abstract",
-                        page_start: null,
-                        page_end: null,
-                        score: 1,
-                        source_kind: "online",
-                        source_name: "crossref, openalex",
-                        source_url: discoveryRecord.url,
-                        discovery_record: discoveryRecord,
-                    },
-                ],
-                model: "test-model",
-            });
+            return json(route, [
+                {
+                    id: "question",
+                    role: "user",
+                    content: "测试在线证据导入",
+                    citations: [],
+                    model: "",
+                },
+                {
+                    id: "assistant",
+                    role: "assistant",
+                    content: "在线摘要支持该结论 [W1]。",
+                    citations: [
+                        {
+                            id: "W1",
+                            chunk_id: "web:crossref:10.1000/online",
+                            item_id: "",
+                            title: discoveryRecord.title,
+                            text: `Title: ${discoveryRecord.title}\nDOI: ${discoveryRecord.doi}`,
+                            section: "online title/abstract",
+                            page_start: null,
+                            page_end: null,
+                            score: 1,
+                            source_kind: "online",
+                            source_name: "crossref, openalex",
+                            source_url: discoveryRecord.url,
+                            discovery_record: discoveryRecord,
+                        },
+                    ],
+                    model: "test-model",
+                },
+            ]);
         }
         if (pathname === "/v1/discovery/search") {
             return json(route, {
@@ -259,7 +305,9 @@ function json(route, body) {
     if (errors.length) throw new Error(`Browser errors: ${errors.join(" | ")}`);
     console.log(JSON.stringify({ discoveryScreenshot, screenshot, errors }));
     await browser.close();
-})().catch((error) => {
+    browser = null;
+})().catch(async (error) => {
+    if (browser) await browser.close();
     console.error(error);
     process.exitCode = 1;
 });

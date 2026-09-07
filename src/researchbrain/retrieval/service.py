@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -271,6 +272,9 @@ def _item_metadata_text(item: Item) -> str:
     fields = [f"Title: {item.title}"]
     if item.abstract:
         fields.append(f"Abstract: {item.abstract[:8000]}")
+    keywords = _item_keywords(item.raw_data)
+    if keywords:
+        fields.append(f"Keywords: {', '.join(keywords[:30])}")
     if item.container_title:
         fields.append(f"Journal: {item.container_title}")
     if item.year:
@@ -280,3 +284,26 @@ def _item_metadata_text(item: Item) -> str:
     if item.url:
         fields.append(f"URL: {item.url}")
     return "\n".join(fields)
+
+
+def _item_keywords(raw_data: dict) -> list[str]:
+    values: list[str] = []
+    for key in ("keywords", "keyword", "tags"):
+        raw = raw_data.get(key) if isinstance(raw_data, dict) else None
+        if isinstance(raw, str):
+            values.extend(part.strip() for part in re.split(r"[,;；、]", raw))
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str):
+                    values.append(item)
+                elif isinstance(item, dict):
+                    values.append(str(item.get("tag") or item.get("name") or item.get("value") or ""))
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = " ".join(value.split()).strip()
+        key = clean.casefold()
+        if clean and key not in seen:
+            seen.add(key)
+            result.append(clean)
+    return result

@@ -28,6 +28,7 @@ from researchbrain.db.models import (
     Attachment,
     ChatMessage,
     ChatSession,
+    ChatSessionMemory,
     DocumentArtifact,
     DocumentChunk,
     Identifier,
@@ -71,7 +72,9 @@ from researchbrain.library.repository import LibraryRepository
 from researchbrain.lifecycle import exit_when_parent_stops
 from researchbrain.metadata.crossref import CrossrefProvider
 from researchbrain.orchestration import ResearchBudgets, ResearchOrchestrator
+from researchbrain.orchestration.acquisition import ResearchAcquisitionTools
 from researchbrain.orchestration.store import TERMINAL_RUN_STATUSES, ResearchRunStore
+from researchbrain.orchestration.tools import ImportDoisArguments
 from researchbrain.retrieval.index import LanceIndex
 from researchbrain.retrieval.minimax import EmbeddingError, MiniMaxEmbedder
 from researchbrain.retrieval.service import EmbeddingPipeline
@@ -82,6 +85,51 @@ from researchbrain.zotero.attachments import ZoteroAttachmentImporter
 from researchbrain.zotero.client import ZoteroConnectionError, ZoteroLocalClient
 
 logger = logging.getLogger(__name__)
+
+
+def _online_no_evidence_report(events: list[dict]) -> str:
+    diagnostics = [value for value in events if value.get("type") == "query_diagnostic"]
+    queries = list(
+        dict.fromkeys(
+            str(value.get("query") or "").strip()
+            for value in diagnostics
+            if str(value.get("query") or "").strip()
+        )
+    )
+    sources: list[str] = []
+    failures: list[str] = []
+    for diagnostic in diagnostics:
+        source = str(diagnostic.get("source") or "").strip()
+        if source and source not in {"local", "all_online"}:
+            sources.append(source)
+        if diagnostic.get("status") == "failed":
+            failures.append(f"{source or '在线来源'}：{diagnostic.get('error') or '检索失败'}")
+        metrics = diagnostic.get("retrieval_metrics") or {}
+        for provider in metrics.get("provider_statuses") or []:
+            provider_source = str(provider.get("source") or "").strip()
+            if provider_source:
+                sources.append(provider_source.split(":", 1)[0])
+            if provider.get("status") == "failed":
+                failures.append(f"{provider_source or '在线来源'}：{provider.get('error') or '服务不可用'}")
+    source_text = "、".join(dict.fromkeys(sources)) or "已配置的在线学术来源"
+    query_lines = "\n".join(f"- `{value}`" for value in queries[:8]) or "- 未形成可执行检索式"
+    failure_lines = "\n".join(f"- {value}" for value in dict.fromkeys(failures))
+    status = (
+        f"\n\n**来源异常**\n{failure_lines}"
+        if failure_lines
+        else "\n\n各来源已返回，但没有候选记录通过主题相关性和可核验性筛选。"
+    )
+    return (
+        "## 在线调研结果\n\n"
+        "本轮没有获得足以支持研究结论的可核验证据，因此系统没有用模型常识拼接一份伪调研报告。"
+        f"已检索来源：{source_text}。\n\n"
+        f"**已执行的检索式**\n{query_lines}"
+        f"{status}\n\n"
+        "**下一步建议**\n"
+        "1. 稍后重试，以排除 Crossref、OpenAlex 等来源的临时超时或限流。\n"
+        "2. 使用更短的英文主题词，先检索研究对象之间的关系，再逐步加入模型和数据源限定。\n"
+        "3. 将已知 DOI 或 PDF 导入当前文库后重试，系统可继续解析、向量化并形成带证据引用的报告。"
+    )
 
 
 class AppState:
@@ -101,6 +149,7 @@ class AppState:
         self.research_tasks: dict[str, asyncio.Task] = {}
         self.research_signals: dict[str, CancellationSignal] = {}
         self.research_steering: dict[str, list[dict[str, str]]] = {}
+        self.research_steering_abort_events: dict[str, asyncio.Event] = {}
         self.research_event_locks: dict[str, asyncio.Lock] = {}
         self.shutting_down = False
 
@@ -134,6 +183,12 @@ class ChatSessionCreateRequest(BaseModel):
     title: str = "New research"
 
 
+class ChatBranchCreateRequest(BaseModel):
+    source_message_id: str
+    name: str = ""
+    source: Literal["user", "assistant", "system"] = "user"
+
+
 class ChatMessageRequest(BaseModel):
     content: str
     evidence_limit: int = 15
@@ -145,8 +200,14 @@ class ResearchRunRequest(ChatMessageRequest):
 
 
 class ResearchSteerRequest(BaseModel):
-    kind: Literal["constraint", "follow_up"] = "constraint"
+    kind: Literal["constraint", "correction", "clarification", "follow_up"] = "constraint"
     content: str = Field(min_length=1, max_length=2000)
+    source_message_id: str = ""
+    target_branch_id: str = ""
+
+
+class FollowUpReorderRequest(BaseModel):
+    ordered_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class ExportRequest(BaseModel):
@@ -453,6 +514,48 @@ def _item_identities(session: Session, item_ids: list[str]) -> dict[str, dict]:
     return identities
 
 
+def _latest_chat_message_id(session: Session, chat_session_id: str) -> str:
+    return str(
+        session.scalar(
+            select(ChatMessage.id)
+            .where(ChatMessage.session_id == chat_session_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(1)
+        )
+        or ""
+    )
+
+
+def _serialize_chat_session(chat_session: ChatSession, count: int = 0, latest: str = "") -> dict:
+    return {
+        "id": chat_session.id,
+        "library_id": chat_session.library_id,
+        "title": chat_session.title,
+        "message_count": int(count or 0),
+        "last_message_preview": (latest[:160] if latest else ""),
+        "parent_session_id": chat_session.parent_session_id,
+        "root_message_id": chat_session.root_message_id,
+        "branch_source_message_id": chat_session.branch_source_message_id,
+        "branch_name": chat_session.branch_name,
+        "branch_source": chat_session.branch_source,
+        "archived_at": chat_session.archived_at,
+        "created_at": chat_session.created_at,
+        "updated_at": chat_session.updated_at,
+    }
+
+
+def _chat_branch_path(session: Session, chat_session: ChatSession) -> list[dict]:
+    path: list[dict] = []
+    current: ChatSession | None = chat_session
+    seen: set[str] = set()
+    while current and current.id not in seen:
+        seen.add(current.id)
+        path.append(_serialize_chat_session(current))
+        current = session.get(ChatSession, current.parent_session_id) if current.parent_session_id else None
+    path.reverse()
+    return path
+
+
 def _item_summaries(session: Session, library_id: str, items: list[Item]) -> list[dict]:
     item_ids = [item.id for item in items]
     pipeline = _item_pipeline_statuses(session, library_id, item_ids)
@@ -646,11 +749,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async with lock:
             return await asyncio.to_thread(run_store.append_event, run_id, event_type, payload)
 
+    async def start_next_follow_up(target_session_id: str) -> dict | None:
+        follow_up = await asyncio.to_thread(run_store.claim_next_follow_up, target_session_id)
+        if not follow_up:
+            return None
+        try:
+            with state.database.session() as session:
+                chat_session = session.get(ChatSession, target_session_id)
+                if not chat_session:
+                    raise ValueError("follow-up target session not found")
+                parent_message_id = _latest_chat_message_id(session, target_session_id)
+                message = ChatMessage(
+                    session_id=target_session_id,
+                    parent_message_id=parent_message_id,
+                    role="user",
+                    content=follow_up["content"],
+                )
+                session.add(message)
+                chat_session.updated_at = datetime.now(UTC)
+                session.flush()
+                user_message_id = message.id
+            source = await asyncio.to_thread(run_store.get_model, follow_up["source_run_id"])
+            budgets = source.budgets if source else ResearchBudgets().model_dump()
+            run = await asyncio.to_thread(
+                run_store.create,
+                target_session_id,
+                user_message_id,
+                follow_up["content"],
+                follow_up["mode"],
+                budgets,
+            )
+            await asyncio.to_thread(run_store.mark_follow_up_running, follow_up["id"], run.id)
+            await append_research_event(
+                run.id,
+                "follow_up_started",
+                {"follow_up_id": follow_up["id"], "source_run_id": follow_up["source_run_id"]},
+            )
+            schedule_research_run(run.id)
+            return run_store.get(run.id)
+        except Exception:
+            await asyncio.to_thread(run_store.release_follow_up, follow_up["id"])
+            raise
+
     async def execute_research_run(run_id: str) -> None:
         run = run_store.get_model(run_id)
         if not run:
             return
         signal = state.research_signals.setdefault(run_id, CancellationSignal())
+        steering_abort_event = state.research_steering_abort_events.setdefault(run_id, asyncio.Event())
 
         async def event_sink(event_type: str, payload: dict) -> None:
             await append_research_event(run_id, event_type, payload)
@@ -733,6 +879,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         )
         budgets = ResearchBudgets.model_validate(run.budgets or {})
+        checkpoint = await asyncio.to_thread(run_store.latest_checkpoint, run_id)
         orchestrator = ResearchOrchestrator(
             embedding_pipeline(),
             gateway,
@@ -742,7 +889,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             signal=signal,
             steering_source=steering_source,
             acquisition_source=acquisition_source,
+            acquisition_tools=ResearchAcquisitionTools(
+                state.database,
+                CrossrefProvider(resolved_settings.crossref_base_url, state.contact_email),
+            ),
+            resume_checkpoint=checkpoint,
+            readonly_tool_cache=await asyncio.to_thread(run_store.readonly_tool_cache, run_id),
+            steering_abort_event=steering_abort_event,
         )
+        if checkpoint:
+            current_run = await asyncio.to_thread(run_store.get_model, run_id)
+            approval_valid = True
+            for approval in current_run.approvals if current_run else []:
+                expires_at = str(approval.get("expires_at") or "")
+                if not expires_at or approval.get("status") not in {"pending", "approved"}:
+                    continue
+                try:
+                    if datetime.fromisoformat(expires_at.replace("Z", "+00:00")) <= datetime.now(UTC):
+                        approval_valid = False
+                except ValueError:
+                    approval_valid = False
+            external_status = await acquisition_source()
+            await event_sink(
+                "checkpoint_resumed",
+                {
+                    "checkpoint_id": checkpoint["id"],
+                    "checkpoint_sequence": checkpoint["sequence"],
+                    "turn_sequence": checkpoint["turn_sequence"],
+                    "phase": checkpoint["phase"],
+                    "approval_valid": approval_valid,
+                    "external_task_status": external_status or {},
+                    "readonly_results_reused": True,
+                },
+            )
         try:
             answer = await orchestrator.run(
                 _run_library_id(state.database, run.session_id),
@@ -772,22 +951,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await asyncio.to_thread(run_store.cancel, run_id)
                 await event_sink("run_cancelled", {"message": "研究任务已停止"})
         except GenerationError as exc:
-            if exc.code == "no_evidence":
-                content = (
-                    "当前文库没有可用于回答该问题的题录、摘要或已解析全文。"
-                    "请先导入文献，或切换到“本地优先 + 联网”后重试。"
-                    if run.mode == "local"
-                    else "本次没有从当前文库或已启用的在线学术来源检索到可核验证据。"
-                )
+            if exc.code in {"no_evidence", "no_relevant_evidence", "clarification_required"}:
+                if exc.code == "clarification_required":
+                    events = await asyncio.to_thread(run_store.events_after, run_id, 0)
+                    clarification = next(
+                        (event for event in reversed(events) if event.get("type") == "ask_user"),
+                        {},
+                    )
+                    questions = [
+                        str(value).strip()
+                        for value in clarification.get("questions", [])
+                        if str(value).strip()
+                    ]
+                    numbered = "\n".join(
+                        f"{index}. {value}" for index, value in enumerate(questions, start=1)
+                    )
+                    content = (
+                        "在开始检索前，还需要确认以下会实质改变研究范围的信息："
+                        f"\n\n{numbered or '1. 请补充明确的研究主题、对象或应用范围。'}"
+                        "\n\n本次尚未执行检索，也没有生成推测性结论。请在下一条消息中补充后重新提问。"
+                    )
+                else:
+                    if exc.code == "no_evidence" and run.mode != "local":
+                        events = await asyncio.to_thread(run_store.events_after, run_id, 0)
+                        content = _online_no_evidence_report(events)
+                    else:
+                        content = (
+                            "当前文库没有可用于回答该问题的题录、摘要或已解析全文。"
+                            "请先导入文献，或切换到“本地优先 + 联网”后重试。"
+                            if exc.code == "no_evidence"
+                            else (
+                                "本次检索到了候选文献，但它们与问题主题不够相关，已被证据门禁排除。"
+                                "系统没有使用这些文献拼接答案；建议切换到“本地优先 + 联网”"
+                                "或补充更明确的研究范围。"
+                            )
+                        )
                 answer = AgentAnswer(
                     answer=content,
                     evidence=[],
                     citation_ids=[],
-                    limitations=["没有检索到可用于形成研究结论的证据。"],
-                    model="local-readiness-check",
+                    limitations=[
+                        "研究主题或范围仍需用户澄清。"
+                        if exc.code == "clarification_required"
+                        else (
+                            "候选证据均未通过主题相关性筛选。"
+                            if exc.code == "no_relevant_evidence"
+                            else "没有检索到可用于形成研究结论的证据。"
+                        )
+                    ],
+                    model=(
+                        "local-clarification-request"
+                        if exc.code == "clarification_required"
+                        else "local-readiness-check"
+                    ),
                     plan={},
                     coverage=[],
-                    metrics={"empty_evidence": True},
+                    metrics={
+                        "empty_evidence": exc.code == "no_evidence",
+                        "relevance_rejected": exc.code == "no_relevant_evidence",
+                        "clarification_required": exc.code == "clarification_required",
+                    },
                 )
                 message = await asyncio.to_thread(run_store.complete, run_id, answer)
                 await event_sink(
@@ -805,11 +1028,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             state.research_tasks.pop(run_id, None)
             state.research_signals.pop(run_id, None)
+            state.research_steering_abort_events.pop(run_id, None)
+            persisted = await asyncio.to_thread(run_store.get, run_id)
+            if persisted and persisted["status"] in TERMINAL_RUN_STATUSES:
+                await asyncio.to_thread(
+                    run_store.finish_follow_up_for_run,
+                    run_id,
+                    persisted["status"],
+                )
+                if persisted["status"] == "completed":
+                    target_ids = await asyncio.to_thread(
+                        run_store.queued_follow_up_targets,
+                        run_id,
+                    )
+                    if persisted["session_id"] not in target_ids:
+                        target_ids.append(persisted["session_id"])
+                    for target_id in target_ids:
+                        try:
+                            await start_next_follow_up(target_id)
+                        except Exception:
+                            logger.exception("Failed to start queued follow-up for %s", target_id)
 
     def schedule_research_run(run_id: str) -> None:
         if run_id in state.research_tasks:
             raise ValueError("research run is already active")
         state.research_signals[run_id] = CancellationSignal()
+        state.research_steering_abort_events[run_id] = asyncio.Event()
         state.research_tasks[run_id] = asyncio.create_task(
             execute_research_run(run_id), name=f"research-run-{run_id}"
         )
@@ -1083,17 +1327,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         session.add(chat_session)
         session.flush()
-        return {
-            "id": chat_session.id,
-            "library_id": chat_session.library_id,
-            "title": chat_session.title,
-            "created_at": chat_session.created_at,
+        return _serialize_chat_session(chat_session)
+
+    @app.post("/v1/chat/sessions/{chat_session_id}/branches", status_code=201)
+    def create_chat_branch(
+        chat_session_id: str,
+        request: ChatBranchCreateRequest,
+        session: SessionDependency,
+    ) -> dict:
+        source_session = session.get(ChatSession, chat_session_id)
+        if not source_session:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        source_message = session.get(ChatMessage, request.source_message_id)
+        if not source_message or source_message.session_id != chat_session_id:
+            raise HTTPException(status_code=404, detail="source message not found")
+        if source_message.role != "user":
+            raise HTTPException(status_code=422, detail="branches must start from a user message")
+        name = request.name.strip() or f"Branch from {source_message.content[:60]}"
+        root_message_id = source_session.root_message_id or source_message.id
+        branch = ChatSession(
+            library_id=source_session.library_id,
+            title=name[:300],
+            parent_session_id=source_session.id,
+            root_message_id=root_message_id,
+            branch_source_message_id=source_message.id,
+            branch_name=name[:300],
+            branch_source=request.source,
+        )
+        session.add(branch)
+        session.flush()
+        source_memory = session.get(ChatSessionMemory, chat_session_id)
+        inherited_summary = {
+            "goal": "",
+            "constraints": [],
+            "terminology": [],
+            "supported_findings": [],
+            "source_identifiers": [],
+            "unresolved_questions": [],
+            "evidence_policy": "navigation_only_zero_evidentiary_weight",
+            "branch_inherits_evidence": False,
         }
+        if source_memory:
+            summary = source_memory.summary or {}
+            inherited_summary.update(
+                {
+                    "goal": str(summary.get("goal") or ""),
+                    "constraints": list(summary.get("constraints") or []),
+                    "terminology": list(summary.get("terminology") or []),
+                    "source_identifiers": list(summary.get("source_identifiers") or []),
+                    "unresolved_questions": list(summary.get("unresolved_questions") or []),
+                }
+            )
+        session.add(
+            ChatSessionMemory(
+                session_id=branch.id,
+                summary=inherited_summary,
+                through_message_id=source_message.id,
+                message_count=0,
+            )
+        )
+        session.flush()
+        return {**_serialize_chat_session(branch), "branch_path": _chat_branch_path(session, branch)}
+
+    @app.post("/v1/chat/sessions/{chat_session_id}/archive")
+    def archive_chat_session(chat_session_id: str, session: SessionDependency) -> dict:
+        chat_session = session.get(ChatSession, chat_session_id)
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        chat_session.archived_at = datetime.now(UTC)
+        chat_session.updated_at = datetime.now(UTC)
+        session.flush()
+        return _serialize_chat_session(chat_session)
+
+    @app.get("/v1/chat/sessions/{chat_session_id}/branch-path")
+    def get_chat_branch_path(chat_session_id: str, session: SessionDependency) -> list[dict]:
+        chat_session = session.get(ChatSession, chat_session_id)
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        return _chat_branch_path(session, chat_session)
 
     @app.get("/v1/chat/sessions")
     def list_chat_sessions(
         library_id: str,
         session: SessionDependency,
+        include_archived: bool = False,
     ) -> list[dict]:
         if not session.get(Library, library_id):
             raise HTTPException(status_code=404, detail="library not found")
@@ -1118,21 +1435,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 latest_content.label("latest_content"),
             )
             .where(ChatSession.library_id == library_id)
+            .where(ChatSession.archived_at.is_(None) if not include_archived else True)
             .order_by(ChatSession.updated_at.desc())
         ).all()
         response = []
         for chat_session, count, latest in rows:
-            response.append(
-                {
-                    "id": chat_session.id,
-                    "library_id": chat_session.library_id,
-                    "title": chat_session.title,
-                    "message_count": int(count or 0),
-                    "last_message_preview": (latest[:160] if latest else ""),
-                    "created_at": chat_session.created_at,
-                    "updated_at": chat_session.updated_at,
-                }
-            )
+            response.append(_serialize_chat_session(chat_session, int(count or 0), str(latest or "")))
         return response
 
     @app.get("/v1/chat/sessions/{chat_session_id}/messages")
@@ -1149,6 +1457,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [
             {
                 "id": message.id,
+                "parent_message_id": message.parent_message_id,
                 "role": message.role,
                 "content": message.content,
                 "citations": message.citations,
@@ -1177,7 +1486,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             if active:
                 raise HTTPException(status_code=409, detail="this chat already has an active research run")
-            message = ChatMessage(session_id=chat_session_id, role="user", content=question)
+            parent_message_id = _latest_chat_message_id(session, chat_session_id)
+            message = ChatMessage(
+                session_id=chat_session_id,
+                parent_message_id=parent_message_id,
+                role="user",
+                content=question,
+            )
             session.add(message)
             session.flush()
             user_message_id = message.id
@@ -1206,6 +1521,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not run:
             raise HTTPException(status_code=404, detail="research run not found")
         return run
+
+    @app.get("/v1/research/runs/{run_id}/turns")
+    def list_research_turns(run_id: str) -> list[dict]:
+        if not run_store.get(run_id):
+            raise HTTPException(status_code=404, detail="research run not found")
+        return run_store.list_turns(run_id)
+
+    @app.get("/v1/research/runs/{run_id}/checkpoint")
+    def get_research_checkpoint(run_id: str) -> dict:
+        if not run_store.get(run_id):
+            raise HTTPException(status_code=404, detail="research run not found")
+        checkpoint = run_store.latest_checkpoint(run_id)
+        if not checkpoint:
+            raise HTTPException(status_code=404, detail="research checkpoint not found")
+        return checkpoint
 
     @app.get("/v1/chat/sessions/{chat_session_id}/runs")
     def list_research_runs(chat_session_id: str, limit: int = 20) -> list[dict]:
@@ -1267,10 +1597,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if signal:
             signal.cancel()
         task = state.research_tasks.get(run_id)
+        await asyncio.to_thread(run_store.cancel, run_id)
         if task:
             task.cancel()
         else:
-            await asyncio.to_thread(run_store.cancel, run_id)
             await append_research_event(run_id, "run_cancelled", {"message": "研究任务已停止"})
         return run_store.get(run_id) or run
 
@@ -1279,12 +1609,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run = run_store.get(run_id)
         if not run:
             raise HTTPException(status_code=404, detail="research run not found")
+        content = request.content.strip()
+        if request.kind == "follow_up":
+            try:
+                follow_up = await asyncio.to_thread(
+                    run_store.enqueue_follow_up,
+                    run_id,
+                    content,
+                    source_message_id=request.source_message_id,
+                    target_session_id=run["session_id"],
+                    target_branch_id=request.target_branch_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            await append_research_event(run_id, "follow_up_queued", {"follow_up": follow_up})
+            if run["status"] in TERMINAL_RUN_STATUSES:
+                await start_next_follow_up(follow_up["target_session_id"])
+            return {"run_id": run_id, "queued": True, "kind": "follow_up", "follow_up": follow_up}
         if run["status"] in TERMINAL_RUN_STATUSES:
             raise HTTPException(status_code=409, detail="research run is no longer active")
-        message = {"kind": request.kind, "content": request.content.strip()}
+        message = {"kind": request.kind, "content": content}
         state.research_steering.setdefault(run_id, []).append(message)
         await append_research_event(run_id, "steering_queued", message)
+        if state.research_tasks.get(run_id) and request.kind in {"constraint", "correction", "clarification"}:
+            state.research_steering_abort_events.setdefault(run_id, asyncio.Event()).set()
+            await append_research_event(
+                run_id,
+                "steering_abort_requested",
+                {
+                    **message,
+                    "current_phase": run.get("phase", ""),
+                    "cancellable": True,
+                    "current_tool_abort_signal": True,
+                    "replan_at_phase_boundary": True,
+                },
+            )
         return {"run_id": run_id, "queued": True, **message}
+
+    @app.get("/v1/chat/sessions/{chat_session_id}/follow-ups")
+    def list_research_follow_ups(
+        chat_session_id: str,
+        include_finished: bool = False,
+    ) -> list[dict]:
+        with state.database.session() as session:
+            if not session.get(ChatSession, chat_session_id):
+                raise HTTPException(status_code=404, detail="chat session not found")
+        return run_store.list_follow_ups(chat_session_id, include_finished=include_finished)
+
+    @app.put("/v1/chat/sessions/{chat_session_id}/follow-ups/order")
+    def reorder_research_follow_ups(
+        chat_session_id: str,
+        request: FollowUpReorderRequest,
+    ) -> list[dict]:
+        try:
+            return run_store.reorder_follow_ups(chat_session_id, request.ordered_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete("/v1/research/follow-ups/{follow_up_id}", status_code=204)
+    def delete_research_follow_up(follow_up_id: str) -> None:
+        try:
+            run_store.delete_follow_up(follow_up_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/research/runs/{run_id}/retry", status_code=202)
     async def retry_research_run(run_id: str) -> dict:
@@ -1314,16 +1701,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         approval = next((value for value in run.approvals if value.get("id") == approval_id), None)
         if not approval:
             raise HTTPException(status_code=404, detail="approval not found")
-        if approval.get("status") != "pending":
-            raise HTTPException(status_code=409, detail="approval has already been handled")
         if approval.get("action") != "import_dois":
             raise HTTPException(status_code=422, detail="unsupported research approval action")
+        try:
+            await asyncio.to_thread(run_store.begin_approval, run_id, approval_id)
+        except ValueError as exc:
+            if "expired" in str(exc):
+                await asyncio.to_thread(run_store.expire_approval, run_id, approval_id)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         dois = [str(value) for value in approval.get("dois") or []]
         library_id = _run_library_id(state.database, run.session_id)
-        with state.database.session() as session:
-            batch = JobService(session).create_doi_batch(library_id, dois, False)
-            batch_id = batch.id
-        approved = await asyncio.to_thread(run_store.approve, run_id, approval_id, batch_id)
+        arguments = ImportDoisArguments(
+            library_id=library_id,
+            dois=dois,
+            include_si=False,
+            approval_id=approval_id,
+            idempotency_key=f"research-approval:{approval_id}:import-dois",
+        )
+
+        async def approval_event_sink(event_type: str, payload: dict) -> None:
+            await append_research_event(run_id, event_type, payload)
+
+        controlled = ResearchOrchestrator(
+            embedding_pipeline(),
+            DeepSeekGateway(
+                DeepSeekClient(
+                    SecretStore().get("deepseek_api_key"),
+                    resolved_settings.deepseek_base_url,
+                    resolved_settings.deepseek_model,
+                )
+            ),
+            acquisition_tools=ResearchAcquisitionTools(
+                state.database,
+                CrossrefProvider(resolved_settings.crossref_base_url, state.contact_email),
+            ),
+            event_sink=approval_event_sink,
+        )
+        controlled.current_library_id = library_id
+        controlled.grant_tool_approval("import_dois", arguments)
+        tool_results = await controlled.tools.execute_many(
+            "import_dois", [arguments.model_dump()], parallel=False
+        )
+        result = tool_results[0]
+        if not result.succeeded:
+            await asyncio.to_thread(run_store.release_approval, run_id, approval_id, result.error)
+            raise HTTPException(
+                status_code=409,
+                detail={"code": result.error_code, "message": result.error},
+            )
+        batch_id = str(result.value["batch_id"])
+        try:
+            approved = await asyncio.to_thread(run_store.approve, run_id, approval_id, batch_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         await append_research_event(
             run_id,
             "approval_completed",
@@ -1364,7 +1794,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 for message in previous_messages[-6:]
                 if message.role in {"user", "assistant"}
             ]
-            session.add(ChatMessage(session_id=chat_session_id, role="user", content=question))
+            parent_message_id = _latest_chat_message_id(session, chat_session_id)
+            session.add(
+                ChatMessage(
+                    session_id=chat_session_id,
+                    parent_message_id=parent_message_id,
+                    role="user",
+                    content=question,
+                )
+            )
             if chat_session.title == "New research":
                 chat_session.title = question[:100]
             chat_session.updated_at = datetime.now(UTC)
@@ -1391,8 +1829,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                     limitations = ["在线来源没有返回可用于回答的题录或摘要。"]
                 with state.database.session() as session:
+                    parent_message_id = _latest_chat_message_id(session, chat_session_id)
                     message = ChatMessage(
                         session_id=chat_session_id,
+                        parent_message_id=parent_message_id,
                         role="assistant",
                         content=content,
                         citations=[],
@@ -1402,6 +1842,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     session.flush()
                     return {
                         "id": message.id,
+                        "parent_message_id": message.parent_message_id,
                         "role": message.role,
                         "content": message.content,
                         "citations": [],
@@ -1418,8 +1859,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ) from exc
         citations = [asdict(value) for value in answer.evidence]
         with state.database.session() as session:
+            parent_message_id = _latest_chat_message_id(session, chat_session_id)
             message = ChatMessage(
                 session_id=chat_session_id,
+                parent_message_id=parent_message_id,
                 role="assistant",
                 content=answer.answer,
                 citations=citations,
@@ -1429,6 +1872,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.flush()
             return {
                 "id": message.id,
+                "parent_message_id": message.parent_message_id,
                 "role": message.role,
                 "content": message.content,
                 "citations": citations,

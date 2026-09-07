@@ -15,6 +15,7 @@ import {
   FolderOpen,
   FolderSync,
   Github,
+  GitBranch,
   Import,
   KeyRound,
   LibraryBig,
@@ -59,8 +60,12 @@ import {
   Job,
   Library,
   HarnessStatus,
+  QueryDiagnostic,
+  QuerySpec,
   ResearchApproval,
   ResearchEvent,
+  ResearchFollowUp,
+  ResearchIntent,
   ResearchRun,
   SkillRecord,
   ZoteroProbeStatus,
@@ -749,6 +754,7 @@ function ChatView({
 }) {
   const [sessionId, setSessionId] = useState("");
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const [branchPath, setBranchPath] = useState<ChatSessionSummary[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -763,6 +769,39 @@ function ChatView({
   const [runLabel, setRunLabel] = useState("");
   const [runEvidenceCount, setRunEvidenceCount] = useState(0);
   const [runCoverage, setRunCoverage] = useState<Record<string, number>>({});
+  const [runSubquestions, setRunSubquestions] = useState<string[]>([]);
+  const [runQueries, setRunQueries] = useState<string[]>([]);
+  const [runIntent, setRunIntent] = useState<ResearchIntent | null>(null);
+  const [runQuerySpecs, setRunQuerySpecs] = useState<QuerySpec[]>([]);
+  const [runQueryDiagnostics, setRunQueryDiagnostics] = useState<
+    QueryDiagnostic[]
+  >([]);
+  const [runTopicTerms, setRunTopicTerms] = useState<string[]>([]);
+  const [runExcludedTerms, setRunExcludedTerms] = useState<string[]>([]);
+  const [runScreening, setRunScreening] = useState<Record<string, number>>({});
+  const [runSelectedEvidenceReasons, setRunSelectedEvidenceReasons] = useState<
+    string[]
+  >([]);
+  const [runRejectedEvidence, setRunRejectedEvidence] = useState<string[]>([]);
+  const [runReview, setRunReview] = useState<{
+    blocking: number;
+    warnings: number;
+  } | null>(null);
+  const [runReviewIssues, setRunReviewIssues] = useState<string[]>([]);
+  const [runScoutCount, setRunScoutCount] = useState(0);
+  const [runToolStats, setRunToolStats] = useState({
+    started: 0,
+    completed: 0,
+    failed: 0,
+  });
+  const [runToolNames, setRunToolNames] = useState<string[]>([]);
+  const [runTimeline, setRunTimeline] = useState<string[]>([]);
+  const [runClaimSpans, setRunClaimSpans] = useState<string[]>([]);
+  const [runSteeringEffects, setRunSteeringEffects] = useState<string[]>([]);
+  const [runPendingItems, setRunPendingItems] = useState<string[]>([]);
+  const [pendingClarification, setPendingClarification] = useState<string[]>(
+    [],
+  );
   const [streamedAnswer, setStreamedAnswer] = useState("");
   const [runError, setRunError] = useState("");
   const [pendingApproval, setPendingApproval] =
@@ -770,11 +809,26 @@ function ChatView({
   const [approvalRunId, setApprovalRunId] = useState("");
   const [approvalStatus, setApprovalStatus] = useState("");
   const [steeringInput, setSteeringInput] = useState("");
+  const [followUps, setFollowUps] = useState<ResearchFollowUp[]>([]);
+  const [latestRunId, setLatestRunId] = useState("");
   const [recoverableRun, setRecoverableRun] = useState<ResearchRun | null>(
     null,
   );
   const streamController = useRef<AbortController | null>(null);
   const restoreStoredRuns = (runs: ResearchRun[]) => {
+    setRunScreening({});
+    setRunSelectedEvidenceReasons([]);
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
+    setRunTimeline([]);
+    setRunClaimSpans([]);
+    setRunSteeringEffects([]);
+    setRunPendingItems([]);
+    setPendingClarification([]);
     setRecoverableRun(
       runs.find((run) =>
         ["paused", "failed", "cancelled"].includes(run.status),
@@ -788,12 +842,44 @@ function ChatView({
     );
     setPendingApproval(approval || null);
     setApprovalRunId(approvalRun?.id || "");
+    const latest = runs[0];
+    setLatestRunId(latest?.id || "");
+    const plan = latest?.plan as
+      | {
+          research_intent?: ResearchIntent;
+          subquestions?: Array<{ question?: string }>;
+          queries?: string[];
+          query_specs?: QuerySpec[];
+          topic_terms?: string[];
+          excluded_terms?: string[];
+        }
+      | undefined;
+    setRunSubquestions(
+      plan?.subquestions
+        ?.map((value) => String(value.question || "").trim())
+        .filter(Boolean) || [],
+    );
+    setRunQueries(plan?.queries?.map(String).filter(Boolean) || []);
+    setRunIntent(plan?.research_intent || null);
+    setRunQuerySpecs(plan?.query_specs || []);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms(plan?.topic_terms?.map(String).filter(Boolean) || []);
+    setRunExcludedTerms(
+      plan?.excluded_terms?.map(String).filter(Boolean) || [],
+    );
+    const coverageCounts: Record<string, number> = {};
+    for (const value of latest?.coverage || []) {
+      const status = String(value.status || "");
+      if (status) coverageCounts[status] = (coverageCounts[status] || 0) + 1;
+    }
+    setRunCoverage(coverageCounts);
   };
   useEffect(() => {
     let cancelled = false;
     setLoadingHistory(true);
     setSessionId("");
     setSessions([]);
+    setBranchPath([]);
     setMessages([]);
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
@@ -801,10 +887,32 @@ function ChatView({
     setRunLabel("");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunSelectedEvidenceReasons([]);
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
+    setRunTimeline([]);
+    setRunClaimSpans([]);
+    setRunSteeringEffects([]);
+    setRunPendingItems([]);
+    setPendingClarification([]);
     setStreamedAnswer("");
     setRunError("");
     setPendingApproval(null);
     setApprovalRunId("");
+    setFollowUps([]);
+    setLatestRunId("");
     setRecoverableRun(null);
     streamController.current?.abort();
     api
@@ -814,13 +922,17 @@ function ChatView({
         setSessions(values);
         if (values.length) {
           const latestId = values[0].id;
-          const [restored, runs] = await Promise.all([
+          const [restored, runs, path, queuedFollowUps] = await Promise.all([
             api.messages(latestId),
             api.researchRuns(latestId),
+            api.branchPath(latestId),
+            api.followUps(latestId),
           ]);
           if (!cancelled) {
             setSessionId(latestId);
             setMessages(restored);
+            setBranchPath(path);
+            setFollowUps(queuedFollowUps);
             restoreStoredRuns(runs);
           }
         }
@@ -842,11 +954,15 @@ function ChatView({
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
     try {
-      const [restored, runs] = await Promise.all([
+      const [restored, runs, path, queuedFollowUps] = await Promise.all([
         api.messages(id),
         api.researchRuns(id),
+        api.branchPath(id),
+        api.followUps(id),
       ]);
       setMessages(restored);
+      setBranchPath(path);
+      setFollowUps(queuedFollowUps);
       restoreStoredRuns(runs);
       setSessionId(id);
     } finally {
@@ -857,11 +973,55 @@ function ChatView({
     if (busy) return;
     setSessionId("");
     setMessages([]);
+    setBranchPath([]);
     setSelectedEvidence(null);
     setEvidenceImportStatus("");
     setRecoverableRun(null);
     setPendingApproval(null);
     setApprovalRunId("");
+    setFollowUps([]);
+    setLatestRunId("");
+    setRunEvidenceCount(0);
+    setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunSelectedEvidenceReasons([]);
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
+    setRunTimeline([]);
+    setRunClaimSpans([]);
+    setRunSteeringEffects([]);
+    setRunPendingItems([]);
+    setPendingClarification([]);
+  };
+  const createBranchFromMessage = async (message: ChatMessage) => {
+    if (busy || message.role !== "user" || !sessionId) return;
+    setLoadingHistory(true);
+    try {
+      const branch = await api.createBranch(
+        sessionId,
+        message.id,
+        `分支：${message.content.slice(0, 40)}`,
+      );
+      const values = await api.chatSessions(library.id);
+      setSessions(values);
+      setMessages([]);
+      setBranchPath(branch.branch_path || [branch]);
+      setSessionId(branch.id);
+      restoreStoredRuns([]);
+    } finally {
+      setLoadingHistory(false);
+    }
   };
   const selectEvidence = (evidence: ChatEvidence) => {
     setSelectedEvidence(evidence);
@@ -886,12 +1046,105 @@ function ChatView({
       setImportingEvidence(false);
     }
   };
+  const appendRunTimeline = (entry: string) => {
+    setRunTimeline((values) => [...values.slice(-39), entry]);
+  };
   const handleResearchEvent = (event: ResearchEvent) => {
     if (event.type === "run_retried") {
       setRunError("");
       setStreamedAnswer("");
       setRunEvidenceCount(0);
       setRunCoverage({});
+      setRunSubquestions([]);
+      setRunQueries([]);
+      setRunIntent(null);
+      setRunQuerySpecs([]);
+      setRunQueryDiagnostics([]);
+      setRunTopicTerms([]);
+      setRunExcludedTerms([]);
+      setRunScreening({});
+      setRunSelectedEvidenceReasons([]);
+      setRunRejectedEvidence([]);
+      setRunReview(null);
+      setRunReviewIssues([]);
+      setRunScoutCount(0);
+      setRunToolStats({ started: 0, completed: 0, failed: 0 });
+      setRunToolNames([]);
+      setRunTimeline([]);
+      setRunClaimSpans([]);
+      setRunSteeringEffects([]);
+      setRunPendingItems([]);
+      setPendingClarification([]);
+    }
+    if (event.type === "intent_ready" && event.research_intent) {
+      setRunIntent(event.research_intent);
+      if (event.research_intent.clarification_required) {
+        setRunPendingItems((values) => [
+          ...values.filter((value) => !value.startsWith("待澄清：")),
+          `待澄清：${event.research_intent?.ambiguities.join("；") || "需要用户确认"}`,
+        ]);
+      } else if (event.clarification_resolved) {
+        setPendingClarification([]);
+      }
+    }
+    if (event.type === "ask_user") {
+      const questions =
+        event.questions?.map((value) => value.trim()).filter(Boolean) || [];
+      setPendingClarification(
+        questions.length
+          ? questions
+          : ["请补充明确的研究主题、对象或应用范围。"],
+      );
+      setRunLabel("需要确认研究范围，收到回复后将继续当前任务");
+    }
+    if (event.type === "clarification_received") {
+      setPendingClarification([]);
+      setRunPendingItems((values) =>
+        values.filter((value) => !value.startsWith("待澄清：")),
+      );
+      setRunLabel("已收到澄清，继续规划与检索");
+    }
+    if (event.type === "plan_ready") {
+      setRunSubquestions(
+        event.subquestions?.map((value) => value.question).filter(Boolean) ||
+          [],
+      );
+      setRunQueries(event.queries || []);
+      setRunIntent(event.research_intent || null);
+      setRunQuerySpecs(event.query_specs || []);
+      setRunTopicTerms(event.topic_terms || []);
+      setRunExcludedTerms(event.excluded_terms || []);
+    }
+    if (
+      event.type === "query_diagnostic" &&
+      event.query_id &&
+      event.subquestion_id &&
+      event.language &&
+      event.source &&
+      event.query
+    ) {
+      const diagnostic: QueryDiagnostic = {
+        id: event.query_id,
+        subquestion_id: event.subquestion_id,
+        language: event.language,
+        source: event.source,
+        query: event.query,
+        rationale: event.rationale || "",
+        status: event.status || "",
+        result_count: event.result_count || 0,
+        added_count: event.added_count || 0,
+        duplicate_count: event.duplicate_count || 0,
+        relevant_count: event.relevant_count || 0,
+        adjacent_count: event.adjacent_count || 0,
+        irrelevant_count: event.irrelevant_count || 0,
+        score_distribution: event.score_distribution || {},
+        providers: event.providers || [],
+        error: event.error || "",
+      };
+      setRunQueryDiagnostics((values) => [
+        ...values.filter((value) => value.id !== diagnostic.id),
+        diagnostic,
+      ]);
     }
     if (event.type === "phase_started" && event.label) setRunLabel(event.label);
     if (event.type === "evidence_updated" && typeof event.count === "number") {
@@ -900,15 +1153,169 @@ function ChatView({
     if (event.type === "coverage_updated" && event.counts) {
       setRunCoverage(event.counts);
     }
+    if (event.type === "evidence_screened" && event.counts) {
+      setRunScreening(event.counts);
+      setRunSelectedEvidenceReasons(
+        event.judgments
+          ?.filter((value) => value.relevance === "relevant")
+          .slice(0, 6)
+          .map((value) => `${value.evidence_id} 入选：${value.reason}`) || [],
+      );
+      setRunRejectedEvidence(
+        event.judgments
+          ?.filter((value) => value.relevance !== "relevant")
+          .slice(0, 6)
+          .map(
+            (value) =>
+              `${value.evidence_id} ${value.relevance === "irrelevant" ? "排除" : "相邻保留审计"}：${value.reason}`,
+          ) || [],
+      );
+    }
+    if (event.type === "scouts_started" && typeof event.count === "number") {
+      setRunScoutCount(event.count);
+    }
+    if (event.type === "agent_action") {
+      appendRunTimeline(
+        `动作：${event.action || "unknown"}${event.tool_calls?.length ? ` · 工具 ${event.tool_calls.map((value) => value.tool).join("、")}` : ""}`,
+      );
+    }
+    if (event.type === "tool_execution_start") {
+      appendRunTimeline(
+        `工具开始：${event.tool || "unknown"} · ${event.call_id || ""}`,
+      );
+      setRunToolStats((value) => ({ ...value, started: value.started + 1 }));
+      if (event.tool) {
+        setRunToolNames((value) =>
+          value.includes(event.tool as string)
+            ? value
+            : [...value, event.tool as string],
+        );
+      }
+    }
+    if (event.type === "tool_execution_end") {
+      appendRunTimeline(
+        `工具结果：${event.tool || "unknown"} · ${event.status || "failed"}${event.error ? ` · ${event.error}` : ""}`,
+      );
+      setRunToolStats((value) => ({
+        ...value,
+        completed: value.completed + Number(event.status === "completed"),
+        failed: value.failed + Number(event.status === "failed"),
+      }));
+    }
+    if (event.type === "tool_result") {
+      appendRunTimeline(
+        `tool_result：${event.tool || "unknown"} · ${event.status || "failed"}`,
+      );
+    }
+    if (event.type === "tool_budget_constrained") {
+      appendRunTimeline(
+        `工具预算收束：${event.tool || "unknown"} · 执行 ${event.accepted_calls || 0}/${event.requested_calls || 0}，跳过 ${event.skipped_calls || 0}`,
+      );
+      setRunLabel("检索预算已达到上限，正在基于已有证据生成受限答案");
+      setRunPendingItems((values) => [
+        ...values.filter((value) => !value.startsWith("工具预算：")),
+        "工具预算：已停止新增检索，继续整理和核验当前证据",
+      ]);
+    }
+    if (event.type === "citation_repair_started") {
+      appendRunTimeline("引用校验：正在修复正文与证据编号的绑定");
+      setRunLabel("正在修复回答中的证据引用");
+    }
+    if (event.type === "citation_repair_completed") {
+      appendRunTimeline("引用校验：修复完成，继续执行 Reviewer");
+      setRunLabel("引用修复完成，正在核验回答");
+    }
+    if (event.type === "citation_repair_degraded") {
+      appendRunTimeline("引用校验：自动修复失败，已降级为可追溯证据目录");
+      setRunLabel("引用绑定失败，正在生成受限证据结果");
+    }
+    if (event.type === "report_quality_degraded") {
+      appendRunTimeline(
+        "报告质量门禁：审查删减过多，已重建为完整的受限证据报告",
+      );
+      setRunLabel("正在重建受限调研报告");
+    }
+    if (event.type === "result_ready") {
+      setRunPendingItems((values) =>
+        values.filter((value) => !value.startsWith("工具预算：")),
+      );
+      setRunLabel("调研完成");
+    }
+    if (event.type === "stop_decision") {
+      appendRunTimeline(
+        `停止判断：${event.stop ? "停止" : "继续"} · ${event.status || ""} · ${event.reason || ""}${event.next_requirement ? ` · 下一步 ${event.next_requirement}` : ""}`,
+      );
+      if (
+        ["approval", "clarification", "background_task"].includes(
+          event.next_requirement || "",
+        )
+      ) {
+        setRunPendingItems((values) => [
+          ...values,
+          `等待${event.next_requirement}：${event.reason || event.status || "pending"}`,
+        ]);
+      }
+    }
+    if (event.type === "claims_ready" && event.claims) {
+      setRunClaimSpans(
+        event.claims.slice(0, 12).map((claim) => {
+          const spans = claim.evidence_spans
+            .map((span) => `${span.evidence_id}「${span.span.slice(0, 80)}」`)
+            .join("；");
+          return `${claim.claim_id}：${claim.text} → ${spans || claim.citation_ids.join("、") || "无证据 span"}`;
+        }),
+      );
+    }
+    if (event.type === "steering_queued") {
+      setRunPendingItems((values) => [
+        ...values,
+        `Steering 待生效：${event.content || event.message || ""}`,
+      ]);
+    }
+    if (event.type === "follow_up_queued" && event.follow_up) {
+      setRunPendingItems((values) => [
+        ...values,
+        `Follow-up：${event.follow_up?.content || "已加入队列"}`,
+      ]);
+    }
+    if (
+      event.type === "steering_applied" ||
+      event.type === "steering_revalidated"
+    ) {
+      setRunSteeringEffects((values) => [
+        ...values.slice(-9),
+        `${event.type === "steering_applied" ? "已应用" : "已重校验"}：${event.message || event.reason || JSON.stringify(event.metrics || {})}`,
+      ]);
+      setRunPendingItems((values) =>
+        values.filter((value) => !value.startsWith("Steering 待生效")),
+      );
+    }
+    if (event.type === "review_ready") {
+      setRunReview({
+        blocking: event.blocking || 0,
+        warnings: event.warnings || 0,
+      });
+      setRunReviewIssues(
+        event.issues?.map((value) => value.reason).filter(Boolean) || [],
+      );
+    }
     if (event.type === "answer_delta" && event.delta) {
       setStreamedAnswer((value) => value + event.delta);
     }
     if (event.type === "approval_available" && event.approval) {
       setPendingApproval(event.approval);
       setApprovalRunId(event.run_id);
+      setRunPendingItems((values) => [
+        ...values,
+        `待审批：${event.approval?.action} ${event.approval?.dois.join("、")}`,
+      ]);
     }
     if (event.type === "acquisition_updated") {
       setRunLabel("已确认导入，正在等待开放全文处理");
+      setRunPendingItems((values) => [
+        ...values,
+        `后台任务：${event.batch_status || "running"}，活动 ${event.active_jobs || 0}`,
+      ]);
     }
     if (event.type === "run_failed") {
       setRunError(event.message || event.code || "研究任务失败");
@@ -934,6 +1341,77 @@ function ChatView({
     } catch (reason) {
       setRunError(String(reason));
     }
+  };
+  const submitClarification = async () => {
+    const content = steeringInput.trim();
+    if (!activeRunId || !content) return;
+    try {
+      await api.steerResearchRun(activeRunId, content, "clarification");
+      setSteeringInput("");
+      setRunLabel("澄清已提交，正在继续当前研究任务");
+    } catch (reason) {
+      setRunError(String(reason));
+    }
+  };
+  const queueFollowUp = async () => {
+    const content = steeringInput.trim();
+    const sourceRunId = activeRunId || latestRunId;
+    if (!sourceRunId || !content || !sessionId) return;
+    try {
+      await api.steerResearchRun(sourceRunId, content, "follow_up", sessionId);
+      setSteeringInput("");
+      setFollowUps(await api.followUps(sessionId));
+      setRunLabel("后续问题已加入队列，将在当前运行结束后执行");
+    } catch (reason) {
+      setRunError(String(reason));
+    }
+  };
+  const moveFollowUp = async (index: number, offset: number) => {
+    if (!sessionId) return;
+    const target = index + offset;
+    if (target < 0 || target >= followUps.length) return;
+    const reordered = [...followUps];
+    [reordered[index], reordered[target]] = [
+      reordered[target],
+      reordered[index],
+    ];
+    setFollowUps(
+      await api.reorderFollowUps(
+        sessionId,
+        reordered.map((value) => value.id),
+      ),
+    );
+  };
+  const deleteFollowUp = async (followUpId: string) => {
+    await api.deleteFollowUp(followUpId);
+    if (sessionId) setFollowUps(await api.followUps(sessionId));
+  };
+  const exportResearchDiagnostics = () => {
+    const diagnostic = {
+      run_id: activeRunId || latestRunId,
+      session_id: sessionId,
+      exported_at: new Date().toISOString(),
+      research_intent: runIntent,
+      query_specs: runQuerySpecs,
+      query_diagnostics: runQueryDiagnostics,
+      coverage: runCoverage,
+      tools: { stats: runToolStats, names: runToolNames },
+      timeline: runTimeline,
+      steering_effects: runSteeringEffects,
+      pending: runPendingItems,
+      claim_evidence_spans: runClaimSpans,
+      review_issues: runReviewIssues,
+      note: "No secrets, API keys, raw full text, or evidence body text are included.",
+    };
+    const blob = new Blob([JSON.stringify(diagnostic, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `research-diagnostics-${diagnostic.run_id || "run"}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
   const approveAcquisition = async () => {
     if (!approvalRunId || !pendingApproval) return;
@@ -976,8 +1454,10 @@ function ChatView({
       controller.signal,
     );
     const completed = await api.researchRun(runId);
+    setLatestRunId(completed.id);
     if (completed.status === "completed") {
       setMessages(await api.messages(id));
+      setFollowUps(await api.followUps(id));
       setRecoverableRun(null);
     } else if (completed.status === "failed") {
       setRecoverableRun(completed);
@@ -1009,6 +1489,26 @@ function ChatView({
     setRunLabel("正在恢复研究任务");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunSelectedEvidenceReasons([]);
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
+    setRunTimeline([]);
+    setRunClaimSpans([]);
+    setRunSteeringEffects([]);
+    setRunPendingItems([]);
+    setPendingClarification([]);
     setStreamedAnswer("");
     setRunError("");
     try {
@@ -1035,6 +1535,26 @@ function ChatView({
     setRunLabel("正在创建研究任务");
     setRunEvidenceCount(0);
     setRunCoverage({});
+    setRunSubquestions([]);
+    setRunQueries([]);
+    setRunIntent(null);
+    setRunQuerySpecs([]);
+    setRunQueryDiagnostics([]);
+    setRunTopicTerms([]);
+    setRunExcludedTerms([]);
+    setRunScreening({});
+    setRunSelectedEvidenceReasons([]);
+    setRunRejectedEvidence([]);
+    setRunReview(null);
+    setRunReviewIssues([]);
+    setRunScoutCount(0);
+    setRunToolStats({ started: 0, completed: 0, failed: 0 });
+    setRunToolNames([]);
+    setRunTimeline([]);
+    setRunClaimSpans([]);
+    setRunSteeringEffects([]);
+    setRunPendingItems([]);
+    setPendingClarification([]);
     setStreamedAnswer("");
     setRunError("");
     setPendingApproval(null);
@@ -1115,6 +1635,7 @@ function ChatView({
               title={session.title}
             >
               <strong>
+                {session.parent_session_id && <GitBranch size={12} />}
                 {session.title === "New research" ? "新对话" : session.title}
               </strong>
               <span>{session.last_message_preview || "尚无消息"}</span>
@@ -1135,6 +1656,23 @@ function ChatView({
         </div>
       </aside>
       <div className="conversation">
+        {branchPath.length > 0 && (
+          <nav className="branch-path" aria-label="会话分支路径">
+            <GitBranch size={14} />
+            {branchPath.map((node, index) => (
+              <button
+                type="button"
+                key={node.id}
+                className={node.id === sessionId ? "active" : ""}
+                onClick={() => void openSession(node.id)}
+                title={node.branch_source_message_id || node.id}
+              >
+                {index > 0 && " / "}
+                {node.branch_name || node.title || "主干"}
+              </button>
+            ))}
+          </nav>
+        )}
         <div className="message-list">
           {!messages.length && (
             <div className="chat-empty">
@@ -1153,6 +1691,18 @@ function ChatView({
             <article key={message.id} className={`message ${message.role}`}>
               <div className="message-role">
                 {message.role === "user" ? "你" : "ResearchBrain"}
+                {message.role === "user" && (
+                  <button
+                    type="button"
+                    className="branch-create"
+                    onClick={() => void createBranchFromMessage(message)}
+                    disabled={busy}
+                    title="从这条用户消息创建分支"
+                  >
+                    <GitBranch size={12} />
+                    创建分支
+                  </button>
+                )}
               </div>
               <div className="message-content">
                 {message.role === "assistant" ? (
@@ -1201,7 +1751,12 @@ function ChatView({
               </button>
             </section>
           )}
-          {(busy || pendingApproval) && (
+          {(busy ||
+            pendingApproval ||
+            followUps.length > 0 ||
+            runIntent ||
+            runSubquestions.length > 0 ||
+            runQueries.length > 0) && (
             <section className="research-progress" aria-live="polite">
               <div className="research-progress-title">
                 {busy ? (
@@ -1221,8 +1776,283 @@ function ChatView({
                   <span>待补充 {runCoverage.insufficient_evidence || 0}</span>
                 </div>
               )}
+              {(runIntent ||
+                runSubquestions.length > 0 ||
+                runQueries.length > 0 ||
+                runQuerySpecs.length > 0 ||
+                runTopicTerms.length > 0 ||
+                runToolStats.started > 0 ||
+                runTimeline.length > 0 ||
+                runClaimSpans.length > 0 ||
+                runPendingItems.length > 0 ||
+                runSteeringEffects.length > 0 ||
+                Object.keys(runScreening).length > 0 ||
+                runReview) && (
+                <details className="research-trace" open={busy}>
+                  <summary>
+                    <ChevronDown size={13} />
+                    研究过程
+                  </summary>
+                  <div className="research-trace-content">
+                    {runIntent && (
+                      <section>
+                        <strong>研究意图与范围</strong>
+                        <div className="research-trace-terms">
+                          <span>任务：{runIntent.task_type}</span>
+                          {(runIntent.domains.length > 0 ||
+                            runIntent.research_objects.length > 0 ||
+                            runIntent.methods.length > 0) && (
+                            <span>
+                              领域/对象/方法：
+                              {[
+                                ...runIntent.domains,
+                                ...runIntent.research_objects,
+                                ...runIntent.methods,
+                              ].join(" · ")}
+                            </span>
+                          )}
+                          {(runIntent.time_range.start_year ||
+                            runIntent.time_range.end_year) && (
+                            <span>
+                              时间：{runIntent.time_range.start_year || "不限"}–
+                              {runIntent.time_range.end_year || "至今"}
+                            </span>
+                          )}
+                          {runIntent.geography.length > 0 && (
+                            <span>地域：{runIntent.geography.join(" · ")}</span>
+                          )}
+                          {runIntent.languages.length > 0 && (
+                            <span>语言：{runIntent.languages.join(" · ")}</span>
+                          )}
+                          {runIntent.assumptions.length > 0 && (
+                            <span>
+                              假设：{runIntent.assumptions.join("；")}
+                            </span>
+                          )}
+                          {runIntent.ambiguities.length > 0 && (
+                            <span>
+                              待确认：{runIntent.ambiguities.join("；")}
+                            </span>
+                          )}
+                        </div>
+                      </section>
+                    )}
+                    {runSubquestions.length > 0 && (
+                      <section>
+                        <strong>问题拆分</strong>
+                        <ol>
+                          {runSubquestions.map((value, index) => (
+                            <li key={`${index}-${value}`}>{value}</li>
+                          ))}
+                        </ol>
+                      </section>
+                    )}
+                    {(runQuerySpecs.length > 0 || runQueries.length > 0) && (
+                      <section>
+                        <strong>按子问题和来源生成的检索式</strong>
+                        <ul>
+                          {runQuerySpecs.length > 0
+                            ? runQuerySpecs.map((value) => (
+                                <li key={value.id}>
+                                  {value.subquestion_id} · {value.source} ·{" "}
+                                  {value.language}：{value.query}
+                                  {value.rationale
+                                    ? `（${value.rationale}）`
+                                    : ""}
+                                </li>
+                              ))
+                            : runQueries.map((value, index) => (
+                                <li key={`${index}-${value}`}>{value}</li>
+                              ))}
+                        </ul>
+                        {runQueryDiagnostics.length > 0 && (
+                          <div className="research-trace-counts">
+                            {runQueryDiagnostics.map((value) => (
+                              <span key={value.id}>
+                                {value.id} 命中 {value.result_count} · 相关{" "}
+                                {value.relevant_count} · 重复{" "}
+                                {value.duplicate_count}
+                                {value.score_distribution.mean !== undefined
+                                  ? ` · 均分 ${value.score_distribution.mean.toFixed(3)}`
+                                  : ""}
+                                {value.error ? ` · ${value.error}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
+                    {runTopicTerms.length > 0 && (
+                      <section>
+                        <strong>主题边界</strong>
+                        <div className="research-trace-terms">
+                          <span>必须相关：{runTopicTerms.join(" · ")}</span>
+                          {runExcludedTerms.length > 0 && (
+                            <span>
+                              跨域排除：{runExcludedTerms.join(" · ")}
+                            </span>
+                          )}
+                        </div>
+                      </section>
+                    )}
+                    {runToolStats.started > 0 && (
+                      <section>
+                        <strong>受控工具循环</strong>
+                        <div className="research-trace-counts">
+                          <span>{runToolNames.join(" · ")}</span>
+                          <span>调用 {runToolStats.started}</span>
+                          <span>完成 {runToolStats.completed}</span>
+                          <span>失败 {runToolStats.failed}</span>
+                        </div>
+                      </section>
+                    )}
+                    {(runTimeline.length > 0 ||
+                      runSteeringEffects.length > 0) && (
+                      <section aria-label="action tool result stop timeline">
+                        <strong>Action / Tool / Stop 时间线</strong>
+                        {runTimeline.length > 0 && (
+                          <ol className="research-trace-timeline">
+                            {runTimeline.map((value, index) => (
+                              <li key={`${index}-${value}`}>{value}</li>
+                            ))}
+                          </ol>
+                        )}
+                        {runSteeringEffects.length > 0 && (
+                          <div
+                            className="research-trace-counts"
+                            aria-label="Steering 生效影响"
+                          >
+                            {runSteeringEffects.map((value) => (
+                              <span key={value}>{value}</span>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
+                    {runClaimSpans.length > 0 && (
+                      <section aria-label="claim evidence span mapping">
+                        <strong>Claim → Evidence span</strong>
+                        <ul className="research-trace-rejections">
+                          {runClaimSpans.map((value) => (
+                            <li key={value}>{value}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                    {runPendingItems.length > 0 && (
+                      <section aria-label="待审批 待澄清 后台任务 Follow-up">
+                        <strong>待处理项</strong>
+                        <ul className="research-trace-rejections">
+                          {runPendingItems.slice(-10).map((value, index) => (
+                            <li key={`${index}-${value}`}>{value}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                    <section>
+                      <button
+                        type="button"
+                        className="secondary small"
+                        onClick={exportResearchDiagnostics}
+                        aria-label="导出不含密钥和全文的诊断"
+                      >
+                        导出诊断 JSON
+                      </button>
+                    </section>
+                    {Object.keys(runScreening).length > 0 && (
+                      <section>
+                        <strong>证据筛选</strong>
+                        <div className="research-trace-counts">
+                          <span>采用 {runScreening.relevant || 0}</span>
+                          <span>相邻 {runScreening.adjacent || 0}</span>
+                          <span>排除 {runScreening.irrelevant || 0}</span>
+                        </div>
+                        {runSelectedEvidenceReasons.length > 0 && (
+                          <ul
+                            className="research-trace-rejections"
+                            aria-label="候选入选理由"
+                          >
+                            {runSelectedEvidenceReasons.map((value) => (
+                              <li key={value}>{value}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {runRejectedEvidence.length > 0 && (
+                          <ul
+                            className="research-trace-rejections"
+                            aria-label="候选排除理由"
+                          >
+                            {runRejectedEvidence.map((value) => (
+                              <li key={value}>{value}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+                    )}
+                    {(runScoutCount > 0 || runReview) && (
+                      <section className="research-trace-audit">
+                        {runScoutCount > 0 && (
+                          <span>证据侦察 {runScoutCount} 个子问题</span>
+                        )}
+                        {runReview && (
+                          <span>
+                            审查：阻断 {runReview.blocking}，警告{" "}
+                            {runReview.warnings}
+                          </span>
+                        )}
+                        {runReviewIssues.length > 0 && (
+                          <ul className="research-trace-review-issues">
+                            {runReviewIssues.map((value) => (
+                              <li key={value}>{value}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+                    )}
+                  </div>
+                </details>
+              )}
               {runError && <p className="research-run-error">{runError}</p>}
-              {busy && activeRunId && (
+              {busy && activeRunId && pendingClarification.length > 0 && (
+                <section
+                  className="research-clarification"
+                  aria-label="研究范围待澄清"
+                >
+                  <strong>需要确认后继续</strong>
+                  <ol>
+                    {pendingClarification.map((question) => (
+                      <li key={question}>{question}</li>
+                    ))}
+                  </ol>
+                  <div className="research-steering">
+                    <input
+                      value={steeringInput}
+                      onChange={(event) => setSteeringInput(event.target.value)}
+                      placeholder="输入澄清，例如：限定为地磁场内外源分离"
+                      aria-label="回答研究范围澄清问题"
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" &&
+                          !event.nativeEvent.isComposing
+                        ) {
+                          event.preventDefault();
+                          void submitClarification();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void submitClarification()}
+                      disabled={!steeringInput.trim()}
+                      title="提交澄清并继续当前研究任务"
+                    >
+                      <Send size={14} />
+                      提交澄清
+                    </button>
+                  </div>
+                </section>
+              )}
+              {busy && activeRunId && pendingClarification.length === 0 && (
                 <div className="research-steering">
                   <input
                     value={steeringInput}
@@ -1234,11 +2064,64 @@ function ChatView({
                     type="button"
                     onClick={() => void submitSteering()}
                     disabled={!steeringInput.trim()}
-                    title="加入补充要求"
+                    title="作为当前运行 Steering"
                   >
                     <Send size={14} />
+                    当前运行
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void queueFollowUp()}
+                    disabled={!steeringInput.trim()}
+                    title="加入运行结束后的 Follow-up 队列"
+                  >
+                    <Plus size={14} />
+                    后续队列
                   </button>
                 </div>
+              )}
+              {followUps.length > 0 && (
+                <section
+                  className="research-follow-ups"
+                  aria-label="待执行 Follow-up 队列"
+                >
+                  <strong>后续问题队列</strong>
+                  <ol>
+                    {followUps.map((followUp, index) => (
+                      <li key={followUp.id}>
+                        <span>{followUp.content}</span>
+                        <small>{followUp.status}</small>
+                        {followUp.status === "queued" && (
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => void moveFollowUp(index, -1)}
+                              disabled={index === 0}
+                              aria-label="上移 Follow-up"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void moveFollowUp(index, 1)}
+                              disabled={index === followUps.length - 1}
+                              aria-label="下移 Follow-up"
+                            >
+                              ↓
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void deleteFollowUp(followUp.id)}
+                              aria-label="删除 Follow-up"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </section>
               )}
               {pendingApproval && (
                 <div className="research-approval">
@@ -1373,6 +2256,16 @@ function ChatView({
                   </button>
                 )}
             </div>
+            {selectedEvidence.relevance_reason && (
+              <p className="evidence-import-status">
+                {selectedEvidence.relevance === "irrelevant"
+                  ? "排除理由"
+                  : selectedEvidence.relevance === "adjacent"
+                    ? "相邻保留审计理由"
+                    : "入选理由"}
+                ：{selectedEvidence.relevance_reason}
+              </p>
+            )}
             {evidenceImportStatus && (
               <p className="evidence-import-status" aria-live="polite">
                 {evidenceImportStatus}
