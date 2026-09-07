@@ -2933,9 +2933,7 @@ class ResearchOrchestrator:
         """Create exactly one diagnostic spec for every declared search tool call."""
         specs: list[QuerySpec] = []
         valid_subquestions = {value.id for value in plan.subquestions}
-        planned_numbers = [
-            int(value.id[1:]) for value in plan.query_specs if value.id[1:].isdigit()
-        ]
+        planned_numbers = [int(value.id[1:]) for value in plan.query_specs if value.id[1:].isdigit()]
         next_number = max(planned_numbers, default=0) + 1
         used_ids: set[str] = set()
         for call in action.tool_calls:
@@ -2972,8 +2970,7 @@ class ResearchOrchestrator:
         if len(specs) == len(results):
             return
         limitation = (
-            f"{tool} 返回数量异常：请求 {len(specs)} 项，收到 {len(results)} 项；"
-            "已处理可一一对应的结果。"
+            f"{tool} 返回数量异常：请求 {len(specs)} 项，收到 {len(results)} 项；已处理可一一对应的结果。"
         )
         self.limitations.append(limitation)
         await self._emit(

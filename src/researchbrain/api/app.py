@@ -110,9 +110,7 @@ def _online_no_evidence_report(events: list[dict]) -> str:
             if provider_source:
                 sources.append(provider_source.split(":", 1)[0])
             if provider.get("status") == "failed":
-                failures.append(
-                    f"{provider_source or '在线来源'}：{provider.get('error') or '服务不可用'}"
-                )
+                failures.append(f"{provider_source or '在线来源'}：{provider.get('error') or '服务不可用'}")
     source_text = "、".join(dict.fromkeys(sources)) or "已配置的在线学术来源"
     query_lines = "\n".join(f"- `{value}`" for value in queries[:8]) or "- 未形成可执行检索式"
     failure_lines = "\n".join(f"- {value}" for value in dict.fromkeys(failures))

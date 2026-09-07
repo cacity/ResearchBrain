@@ -50,9 +50,7 @@ def test_research_trace_uses_readable_text_sizes():
 
     trace_summary = styles.split(".research-trace summary {", 1)[1].split("}", 1)[0]
     trace_content = styles.split(".research-trace-content {", 1)[1].split("}", 1)[0]
-    trace_heading = styles.split(
-        ".research-trace-content section > strong {", 1
-    )[1].split("}", 1)[0]
+    trace_heading = styles.split(".research-trace-content section > strong {", 1)[1].split("}", 1)[0]
 
     assert "font-size: 12px;" in trace_summary
     assert "font-size: 12px;" in trace_content

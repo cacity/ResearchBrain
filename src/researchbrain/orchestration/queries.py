@@ -412,7 +412,7 @@ def broaden_online_query_specs(
 
 def _broad_online_query(value: str) -> str:
     clean = re.sub(r"\[[^\]]+\]", " ", _to_english(value))
-    clean = re.sub(r'\b(?:AND|OR|NOT)\b|[\"():]', " ", clean, flags=re.I)
+    clean = re.sub(r"\b(?:AND|OR|NOT)\b|[\"():]", " ", clean, flags=re.I)
     words = []
     for word in _WORD_RE.findall(clean):
         normalized = word.casefold()
