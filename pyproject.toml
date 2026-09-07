@@ -34,13 +34,13 @@ dependencies = [
 
 [project.optional-dependencies]
 documents = ["pymupdf>=1.25,<2"]
-retrieval = ["lancedb>=0.19,<1", "pyarrow>=18,<24"]
+retrieval = ["lancedb>=0.19,<1", "pyarrow>=18,<26"]
 citations = ["bibtexparser>=1.4,<2", "rispy>=0.10,<1", "citeproc-py>=0.8,<1"]
 mcp = ["mcp>=1.6,<2"]
 all = [
   "pymupdf>=1.25,<2",
   "lancedb>=0.19,<1",
-  "pyarrow>=18,<24",
+  "pyarrow>=18,<26",
   "bibtexparser>=1.4,<2",
   "rispy>=0.10,<1",
   "citeproc-py>=0.8,<1",
