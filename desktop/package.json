@@ -19,7 +19,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/api": "^2.12.1",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -27,12 +27,12 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.0",
+    "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
-    "playwright": "^1.55.0",
-    "prettier": "^3.6.2",
+    "playwright": "^1.63.0",
+    "prettier": "^3.9.9",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
   }
